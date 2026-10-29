@@ -1,17 +1,14 @@
-import os
 import json
 import time
 from typing import Dict, Any, Optional
-from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
-from google.genai.errors import ServerError, ClientError
+from google.genai.errors import ServerError
 import config
 
-load_dotenv()
-
-DEFAULT_MODEL = getattr(config, "GEMINI_MODEL", "gemini-3.8-flash")
+DEFAULT_MODEL = config.GEMINI_MODEL
+MAX_RETRIES = 3
 
 class MatchPrediction(BaseModel):
     analysis_summary: str = Field(description="3-4 cümlelik Türkçe detaylı taktiksel analiz ve değerlendirme")
@@ -23,10 +20,12 @@ class MatchPrediction(BaseModel):
     confidence_score: int = Field(description="Tahminin gerçekleşme olasılığına dair 1 ile 100 arasında integer güven skoru")
 
 def get_gemini_client() -> genai.Client:
-    api_key = getattr(config, "GEMINI_API_KEY", "") or os.getenv("GEMINI_API_KEY")
-    if not api_key:
+    if not config.GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY ortam değişkeni bulunamadı. Lütfen .env dosyasını kontrol edin.")
-    return genai.Client(api_key=api_key)
+    return genai.Client(api_key=config.GEMINI_API_KEY)
+
+def _json_or_placeholder(value: Any, placeholder: str) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2) if value else placeholder
 
 def build_prompt(match_context: Dict[str, Any]) -> str:
     match_info = match_context.get("match", {})
@@ -45,17 +44,11 @@ def build_prompt(match_context: Dict[str, Any]) -> str:
     else:
         odds_str = "Açılan oran bilgisi bulunamadı."
     
-    h2h = match_context.get("h2h")
-    h2h_str = json.dumps(h2h, ensure_ascii=False, indent=2) if h2h else "Yerel ikili mücadele verisi yok (İnternetten kontrol ediniz)."
-    
-    home_last = match_context.get("home_last")
-    home_last_str = json.dumps(home_last, ensure_ascii=False, indent=2) if home_last else "Yerel son maç verisi yok (İnternetten kontrol ediniz)."
-    
-    away_last = match_context.get("away_last")
-    away_last_str = json.dumps(away_last, ensure_ascii=False, indent=2) if away_last else "Yerel son maç verisi yok (İnternetten kontrol ediniz)."
-    
-    missing = match_context.get("missing")
-    missing_str = json.dumps(missing, ensure_ascii=False, indent=2) if missing else "Yerel sakat/cezalı verisi yok (İnternetten kontrol ediniz)."
+    no_last_matches = "Yerel son maç verisi yok (İnternetten kontrol ediniz)."
+    h2h_str = _json_or_placeholder(match_context.get("h2h"), "Yerel ikili mücadele verisi yok (İnternetten kontrol ediniz).")
+    home_last_str = _json_or_placeholder(match_context.get("home_last"), no_last_matches)
+    away_last_str = _json_or_placeholder(match_context.get("away_last"), no_last_matches)
+    missing_str = _json_or_placeholder(match_context.get("missing"), "Yerel sakat/cezalı verisi yok (İnternetten kontrol ediniz).")
 
     prompt = f"""
 Sen profesyonel bir futbol veri analisti, kıdemli bahis stratejisti ve yapay zeka tahmin motorusun. 
@@ -94,65 +87,53 @@ Lütfen Google Search ile takımların en güncel durumlarını (kadro eksikleri
 """
     return prompt
 
+def _prediction_config(use_google_search: bool) -> types.GenerateContentConfig:
+    return types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=MatchPrediction,
+        tools=[{"google_search": {}}] if use_google_search else None
+    )
+
+def _parse_response(response: Any) -> Optional[Dict[str, Any]]:
+    """Gemini yanıtını sözlüğe çevirir. Pydantic parsed model varsa doğrudan onu kullanır; boş yanıtta None döner."""
+    if getattr(response, "parsed", None):
+        return response.parsed.model_dump()
+    if response.text:
+        return json.loads(response.text)
+    return None
+
 def generate_prediction(match_context: Dict[str, Any], model_name: str = DEFAULT_MODEL) -> Dict[str, Any]:
     """
     Verilen maç bağlamı için Google Gemini AI modelini Google Search Grounding ile çalıştırır ve yapılandırılmış tahmin döner.
     """
     client = get_gemini_client()
     prompt = build_prompt(match_context)
-    
-    config = types.GenerateContentConfig(
-        response_mime_type="application/json",
-        response_schema=MatchPrediction,
-        tools=[{"google_search": {}}]
-    )
-    
-    max_retries = 3
     last_exception = None
-    
-    for attempt in range(max_retries):
+
+    for attempt in range(MAX_RETRIES):
+        is_last_attempt = attempt == MAX_RETRIES - 1
         try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=config
-            )
-            
-            # Pydantic parsed model doğrudan kullanılabilir
-            if hasattr(response, "parsed") and response.parsed:
-                return response.parsed.model_dump()
-            
-            if response.text:
-                return json.loads(response.text)
-                
+            response = client.models.generate_content(model=model_name, contents=prompt, config=_prediction_config(True))
+            result = _parse_response(response)
+            if result is not None:
+                return result
         except ServerError as e:
             last_exception = e
-            if attempt < max_retries - 1:
-                time.sleep(3 * (attempt + 1))
-            else:
-                raise e
+            if is_last_attempt:
+                raise
+            time.sleep(3 * (attempt + 1))
         except Exception as e:
             last_exception = e
+            if is_last_attempt:
+                raise
             # Google Search tool kısıtlaması veya arama hatası olursa tools'suz dene
-            if attempt < max_retries - 1:
-                try:
-                    fallback_config = types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=MatchPrediction
-                    )
-                    res_fallback = client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config=fallback_config
-                    )
-                    if hasattr(res_fallback, "parsed") and res_fallback.parsed:
-                        return res_fallback.parsed.model_dump()
-                    if res_fallback.text:
-                        return json.loads(res_fallback.text)
-                except Exception:
-                    time.sleep(2)
-            else:
-                raise e
+            try:
+                response = client.models.generate_content(model=model_name, contents=prompt, config=_prediction_config(False))
+                result = _parse_response(response)
+                if result is not None:
+                    return result
+            except Exception:
+                time.sleep(2)
 
     raise RuntimeError(f"Gemini AI tahmin üretimi başarısız oldu: {last_exception}")
 
@@ -180,17 +161,13 @@ Lütfen SADECE aşağıdaki JSON şemasına uygun saf JSON olarak yanıt ver:
 - 'home_last': '{home_team}' takımının oynadığı son 5 resmi maç ve skoru.
 - 'away_last': '{away_team}' takımının oynadığı son 5 resmi maç ve skoru.
 """
-    config_ai = types.GenerateContentConfig(
+    search_config = types.GenerateContentConfig(
         response_mime_type="application/json",
         tools=[{"google_search": {}}]
     )
-    
+
     try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=config_ai
-        )
+        response = client.models.generate_content(model=model_name, contents=prompt, config=search_config)
         if response.text:
             return json.loads(response.text)
     except Exception as e:

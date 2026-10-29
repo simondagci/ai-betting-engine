@@ -50,7 +50,7 @@ Bu uygulama, yapay zekanın (Google Gemini API) futbol maç istatistiklerini ve 
 
 ## 5. Yapılandırma ve Parametre Dosyası (`config.py`)
 
-* **`ENABLE_GEMINI_ANALYSIS`**: Gemini API'sine istek atılıp atılmayacağını belirleyen genel anahtar (Varsayılan: `False`).
+* **`ENABLE_GEMINI_ANALYSIS`**: Gemini API'sine istek atılıp atılmayacağını belirleyen genel anahtar (Varsayılan: `False`). Web arayüzündeki **Lig Yönetimi › Ayarlar** sayfasından değiştirilebilir; panelden kaydedilen değer (`settings` tablosu) `.env` değerini geçersiz kılar ve "Varsayılana Dön" ile tekrar `.env` değerine dönülür.
 * **`REQUIRE_LEAGUE_APPROVAL`**: Yalnızca `gemini_analysis == 1` olan liglerin analiz edilmesini sağlayan kural (Varsayılan: `True`).
 * **`DEFAULT_LEAGUE_GEMINI_ANALYSIS`**: Yeni eklenen liglerin varsayılan analiz durumu (`0`: Kapalı).
 * **`MATCH_COMPLETION_DELAY_MINUTES`**: Maçın tamamlandı kabul edilmesi için başlama saatinden sonra geçmesi gereken süre (`150` dakika).

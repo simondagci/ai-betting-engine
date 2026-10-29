@@ -1,12 +1,17 @@
 import unittest
 import os
-import sqlite3
+import tempfile
+from unittest import mock
+
+TEST_DB = os.path.join(tempfile.gettempdir(), "test_betting_engine.db")
+# config import edilmeden önce: varsayılan DB yolunu kullanan kodlar (örn. web_server) gerçek veritabanına dokunmasın
+os.environ["DB_FILE_PATH"] = TEST_DB
+
 import config
 import database
 import nesine_api
 import gemini_engine
-
-TEST_DB = "test_betting_engine.db"
+import rules
 
 class TestBettingEngine(unittest.TestCase):
 
@@ -388,6 +393,317 @@ class TestBettingEngine(unittest.TestCase):
         self.assertNotIn("FUT_MATCH", codes_all)
         self.assertEqual(len(all_comp), 2)
         conn.close()
+
+    def test_db_session_commits_and_rolls_back(self):
+        with database.db_session(TEST_DB) as conn:
+            database.save_match(conn, "SESSION_OK", "S1", "S2", "Lig", "01.01.2099", "20:00")
+
+        with self.assertRaises(RuntimeError):
+            with database.db_session(TEST_DB) as conn:
+                database.save_match(conn, "SESSION_FAIL", "S3", "S4", "Lig", "01.01.2099", "20:00")
+                raise RuntimeError("test")
+
+        with database.db_session(TEST_DB) as conn:
+            codes = database.get_existing_match_codes(conn)
+        self.assertIn("SESSION_OK", codes)
+        self.assertNotIn("SESSION_FAIL", codes)
+
+class TestRules(unittest.TestCase):
+
+    def test_result_labels(self):
+        self.assertEqual(rules.result_label("MS", 2, 1), "MS 1")
+        self.assertEqual(rules.result_label("MS", 1, 1), "MS 0")
+        self.assertEqual(rules.result_label("İY", 0, 1), "İY 2")
+
+    def test_three_goal_boundary(self):
+        self.assertEqual(rules.over_under_label(2, 1), "ALT")
+        self.assertEqual(rules.over_under_label(3, 0), "ALT")
+        self.assertEqual(rules.over_under_label(2, 2), "ÜST")
+        self.assertEqual(rules.over_under_label(4, 0), "ÜST")
+
+    def test_kg(self):
+        self.assertEqual(rules.kg_label(1, 1), "KG VAR")
+        self.assertEqual(rules.kg_label(2, 0), "KG YOK")
+
+    def test_flexible_result_matching(self):
+        self.assertTrue(rules.is_result_prediction_correct("MS 1", "ms 1", "MS"))
+        self.assertTrue(rules.is_result_prediction_correct("MS 1", "MS1", "MS"))
+        self.assertFalse(rules.is_result_prediction_correct("MS 1", "MS 2", "MS"))
+        self.assertFalse(rules.is_result_prediction_correct("MS 1", None, "MS"))
+
+    def test_score_matching(self):
+        self.assertTrue(rules.is_score_prediction_correct(2, 1, " 2 - 1 "))
+        self.assertFalse(rules.is_score_prediction_correct(2, 1, "1-2"))
+
+class TestNesineApi(unittest.TestCase):
+
+    def test_extract_odds_labels_and_fallbacks(self):
+        event = {
+            "MA": [
+                # İlk yarı: bilinmeyen seçenek numarası şablonla etiketlenir
+                {"MT": 3, "MTID": 7, "OCA": [{"N": 1, "O": 2.0}, {"N": 4, "O": 9.0}]},
+                # Diğer toplam gol baremi
+                {"MT": 4, "MST": 101, "SOV": 3.5, "OCA": [{"N": 1, "O": 1.4}, {"N": 2, "O": 2.8}]},
+                # Korner
+                {"MT": 5, "MTID": 216, "SOV": 9.5, "OCA": [{"N": 2, "O": 1.9}]},
+                # Genel fallback: bültendeki isimler kullanılır
+                {"MT": 6, "MN": "Handikap", "OCA": [{"N": 1, "O": 3.0, "ON": "H1"}, {"N": 2, "O": 2.0}]},
+                # Tanınmayan ve isimsiz market atlanır
+                {"MT": 7, "OCA": [{"N": 1, "O": 5.0}]}
+            ]
+        }
+        odds = [(o["market_name"], o["option_name"], o["odds_value"]) for o in nesine_api.extract_odds_from_event(event)]
+        self.assertEqual(odds, [
+            ("İlk Yarı Sonucu", "İY 1", 2.0),
+            ("İlk Yarı Sonucu", "İY 4", 9.0),
+            ("3.5 Gol Alt/Üst", "3.5 Alt", 1.4),
+            ("3.5 Gol Alt/Üst", "3.5 Üst", 2.8),
+            ("Toplam Korner 9.5 Alt/Üst", "Korner 9.5 Üst", 1.9),
+            ("Handikap", "H1", 3.0),
+            ("Handikap", "Seçenek 2", 2.0),
+        ])
+
+    def test_extract_odds_without_markets(self):
+        self.assertEqual(nesine_api.extract_odds_from_event({}), [])
+        self.assertEqual(nesine_api.extract_odds_from_event({"MA": None}), [])
+
+    def test_clean_nesine_data_json(self):
+        raw = '{"Data": "{\\"LeagueTable\\":[{\\"Rank\\":1}]}"}'
+        self.assertEqual(nesine_api._clean_nesine_data_json(raw), {"LeagueTable": [{"Rank": 1}]})
+        self.assertEqual(nesine_api._clean_nesine_data_json("<!DOCTYPE html><html></html>"), {})
+        self.assertEqual(nesine_api._clean_nesine_data_json(""), {})
+
+    def test_fetch_match_stats_maps_to_save_match_stats_params(self):
+        responses = {
+            "lastmatches": {"HomeTeamMatches": [{"id": 1}], "AwayTeamMatches": [{"id": 2}]},
+            "competitionhistory?filter=false": {"Competitions": []},
+            "missingplayers": {"HomeTeamMissingPlayers": []},
+            "leaguetable": {"LeagueTable": []},
+        }
+        with mock.patch.object(nesine_api, "_fetch_stats", side_effect=lambda code, endpoint: responses[endpoint]):
+            stats = nesine_api.fetch_match_stats("123")
+
+        self.assertEqual(stats["home_last"], [{"id": 1}])
+        self.assertEqual(stats["away_last"], [{"id": 2}])
+        self.assertEqual(stats["h2h_data"], {"Competitions": []})
+        # database.save_match_stats ile birebir uyumlu anahtarlar
+        database.init_db(TEST_DB)
+        with database.db_session(TEST_DB) as conn:
+            match_id = database.save_match(conn, "STATS_1", "A", "B", "Lig", "01.01.2099", "20:00")
+            database.save_match_stats(conn, match_id, **stats)
+            ctx = database.get_match_full_context(conn, match_id)
+        os.remove(TEST_DB)
+        self.assertEqual(ctx["away_last"], [{"id": 2}])
+
+class TestGeminiEngine(unittest.TestCase):
+
+    PREDICTION = {"predicted_score": "2-1", "confidence_score": 80}
+
+    def _run_with_responses(self, side_effect):
+        client = mock.MagicMock()
+        client.models.generate_content.side_effect = side_effect
+        with mock.patch.object(gemini_engine, "get_gemini_client", return_value=client), \
+             mock.patch.object(gemini_engine.time, "sleep"):
+            result = gemini_engine.generate_prediction({"match": {}})
+        return result, client
+
+    def test_falls_back_to_no_search_on_tool_error(self):
+        ok = mock.MagicMock(parsed=None, text='{"predicted_score": "2-1", "confidence_score": 80}')
+        result, client = self._run_with_responses([ValueError("search tool error"), ok])
+        self.assertEqual(result, self.PREDICTION)
+        configs = [call.kwargs["config"] for call in client.models.generate_content.call_args_list]
+        self.assertIsNotNone(configs[0].tools)
+        self.assertIsNone(configs[1].tools)
+
+    def test_raises_after_max_retries(self):
+        with self.assertRaises(ValueError):
+            self._run_with_responses(ValueError("kalıcı hata"))
+
+class TestWebServer(unittest.TestCase):
+
+    def setUp(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        database.init_db(TEST_DB)
+        import web_server
+        self.client = web_server.app.test_client()
+        with database.db_session(TEST_DB) as conn:
+            self.match_id = database.save_match(conn, "WEB_1", "Ev FK", "Dep FK", "Web Lig", "01.01.2099", "20:00")
+            database.save_match_stats(conn, self.match_id, h2h_data=[{"score": "1-0"}], home_last=[{"score": "2-0"}],
+                                      away_last=[{"score": "0-0"}], missing=None, league_table=None)
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+
+    def _prediction(self, score):
+        return {"predicted_ht_result": "İY 1", "predicted_ft_result": "MS 1", "predicted_over_under_3": "ALT",
+                "predicted_kg": "KG YOK", "predicted_score": score, "confidence_score": 70, "analysis_summary": "x"}
+
+    def test_pages_render(self):
+        self.assertEqual(self.client.get("/").status_code, 200)
+        res = self.client.get(f"/matches/{self.match_id}")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn(f"const MATCH_ID = {self.match_id};".encode(), res.data)
+
+    def test_list_shows_match_once_with_latest_prediction(self):
+        with database.db_session(TEST_DB) as conn:
+            database.save_prediction(conn, self.match_id, self._prediction("1-0"))
+            database.save_prediction(conn, self.match_id, self._prediction("2-0"))
+
+        matches = self.client.get("/api/matches/unfinished").get_json()["matches"]
+        rows = [m for m in matches if m["id"] == self.match_id]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["predicted_score"], "2-0")
+
+        data = self.client.get(f"/api/matches/{self.match_id}/details").get_json()["data"]
+        self.assertEqual([p["predicted_score"] for p in data["predictions"]], ["2-0", "1-0"])
+        self.assertIsNone(data["result"])
+
+    def test_save_result_validation_and_evaluation(self):
+        url = f"/api/matches/{self.match_id}/result"
+        bad_inputs = [
+            {"ht_home": 1, "ht_away": 0, "ft_home": "x", "ft_away": 0},
+            {"ht_home": True, "ht_away": 0, "ft_home": 1, "ft_away": 0},
+            {"ht_home": 0, "ht_away": 0, "ft_home": 100, "ft_away": 0},
+            {"ht_home": 2, "ht_away": 0, "ft_home": 1, "ft_away": 0},
+        ]
+        for body in bad_inputs:
+            self.assertEqual(self.client.post(url, json=body).status_code, 400, body)
+        self.assertEqual(self.client.post("/api/matches/999999/result",
+                                          json={"ht_home": 0, "ht_away": 0, "ft_home": 0, "ft_away": 0}).status_code, 404)
+
+        with database.db_session(TEST_DB) as conn:
+            database.save_prediction(conn, self.match_id, self._prediction("2-1"))
+        res = self.client.post(url, json={"ht_home": 1, "ht_away": 0, "ft_home": "2", "ft_away": 1})
+        self.assertEqual(res.get_json(), {"success": True, "over_under": "ALT", "kg": "KG VAR"})
+
+        data = self.client.get(f"/api/matches/{self.match_id}/details").get_json()["data"]
+        self.assertEqual(data["match"]["status"], "COMPLETED")
+        self.assertEqual(data["predictions"][0]["evaluation"],
+                         {"ht": True, "ft": True, "over_under": True, "kg": False, "score": True})
+
+    def test_sync_stats_keeps_existing_fields(self):
+        url = f"/api/matches/{self.match_id}/sync_stats"
+        empty = {"h2h_data": {}, "home_last": None, "away_last": None, "missing": {}, "league_table": {}}
+        with mock.patch.object(nesine_api, "fetch_match_stats", return_value=empty):
+            self.assertEqual(self.client.post(url).status_code, 502)
+
+        table = {"LeagueTable": [{"Rank": 1, "TeamName": "Ev FK"}]}
+        with mock.patch.object(nesine_api, "fetch_match_stats", return_value={**empty, "league_table": table}):
+            res = self.client.post(url).get_json()
+        self.assertEqual(res["updated_fields"], ["league_table"])
+
+        with database.db_session(TEST_DB) as conn:
+            ctx = database.get_match_full_context(conn, self.match_id)
+        self.assertEqual(ctx["league_table"], table)
+        self.assertEqual(ctx["h2h"], [{"score": "1-0"}])
+
+    def test_sync_bulletin(self):
+        events = [{"C": "NEW_1", "HN": "A", "AN": "B", "league_name": "Lig", "D": "01.12.2099", "T": "20:00", "TYPE": "1",
+                   "MA": [{"MT": 1, "MTID": 1, "OCA": [{"N": 1, "O": 1.5}]}]},
+                  {"C": "NEW_2", "HN": "C", "AN": "D", "league_name": "Lig", "D": "01.12.2099", "T": "20:00", "TYPE": "2"}]
+        with mock.patch.object(nesine_api, "fetch_bulletin", return_value=events):
+            res = self.client.post("/api/admin/sync_bulletin", json={}).get_json()
+        self.assertEqual((res["new_football"], res["new_basketball"], res["odds_total"], res["total_events"]), (1, 0, 1, 2))
+
+        with mock.patch.object(nesine_api, "fetch_bulletin", return_value=events):
+            res = self.client.post("/api/admin/sync_bulletin", json={"include_basketball": True}).get_json()
+        self.assertEqual((res["new_football"], res["new_basketball"], res["skipped"]), (0, 1, 1))
+
+        with mock.patch.object(nesine_api, "fetch_bulletin", return_value=[]):
+            self.assertEqual(self.client.post("/api/admin/sync_bulletin", json={}).status_code, 502)
+
+    def test_details_never_calls_gemini(self):
+        with database.db_session(TEST_DB) as conn:
+            bare_id = database.save_match(conn, "WEB_BARE", "X FK", "Y FK", "Web Lig", "01.01.2099", "20:00")
+            database.set_gemini_enabled(conn, True)
+
+        empty = {"h2h_data": {}, "home_last": None, "away_last": None, "missing": {}, "league_table": {}}
+        with mock.patch.object(nesine_api, "fetch_match_stats", return_value=empty) as nesine, \
+             mock.patch.object(gemini_engine, "fetch_live_team_stats", side_effect=AssertionError("Gemini çağrılmamalı")):
+            res = self.client.get(f"/api/matches/{bare_id}/details")
+        self.assertEqual(res.status_code, 200)
+        nesine.assert_called_once()
+        self.assertIsNone(res.get_json()["data"]["h2h"])
+
+    def test_gemini_endpoints_blocked_when_disabled(self):
+        # Varsayılan: .env ENABLE_GEMINI_ANALYSIS=False ve panel ayarı yok
+        settings = self.client.get("/api/admin/settings").get_json()
+        self.assertEqual((settings["gemini"]["enabled"], settings["gemini"]["source"]), (False, "env"))
+
+        with database.db_session(TEST_DB) as conn:
+            league_id = database.get_match_full_context(conn, self.match_id)["match"]["league_id"]
+
+        with mock.patch.object(gemini_engine, "generate_prediction", side_effect=AssertionError("çağrılmamalı")), \
+             mock.patch.object(gemini_engine, "fetch_live_team_stats", side_effect=AssertionError("çağrılmamalı")):
+            for url in (f"/api/matches/{self.match_id}/analyze", f"/api/matches/{self.match_id}/refresh_stats",
+                        f"/api/admin/leagues/{league_id}/analyze"):
+                res = self.client.post(url, json={})
+                self.assertEqual((res.status_code, res.get_json()["code"]), (403, "GEMINI_DISABLED"), url)
+
+        # Lig analizi engellendiğinde ligin izni de açılmamış olmalı
+        with database.db_session(TEST_DB) as conn:
+            self.assertFalse(database.is_league_analysis_enabled(conn, league_id))
+        self.assertFalse(self.client.get("/api/stats").get_json()["config"]["gemini_analysis_enabled"])
+
+    def test_gemini_setting_and_league_approval_flow(self):
+        self.assertEqual(self.client.post("/api/admin/settings/gemini", json={"enabled": "yes"}).status_code, 400)
+        self.assertEqual(self.client.post("/api/admin/settings/gemini", json={}).status_code, 400)
+
+        res = self.client.post("/api/admin/settings/gemini", json={"enabled": True}).get_json()
+        self.assertEqual((res["gemini"]["enabled"], res["gemini"]["source"]), (True, "panel"))
+        self.assertTrue(self.client.get("/api/stats").get_json()["config"]["gemini_analysis_enabled"])
+
+        url = f"/api/matches/{self.match_id}/analyze"
+        with mock.patch.object(gemini_engine, "generate_prediction", return_value=self._prediction("2-0")) as gen:
+            # Lig izni kapalı (REQUIRE_LEAGUE_APPROVAL=True): Gemini çağrılmadan 409 dönmeli
+            blocked = self.client.post(url, json={})
+            self.assertEqual((blocked.status_code, blocked.get_json()["code"]), (409, "LEAGUE_DISABLED"))
+            self.assertEqual(blocked.get_json()["league_name"], "Web Lig")
+            gen.assert_not_called()
+
+            # Kullanıcı onayı ile lig açılır ve analiz yapılır
+            ok = self.client.post(url, json={"enable_league": True})
+            self.assertEqual(ok.status_code, 200)
+            gen.assert_called_once()
+
+        data = self.client.get(f"/api/matches/{self.match_id}/details").get_json()["data"]
+        self.assertTrue(data["match"]["league_gemini_analysis"])
+        self.assertEqual(data["predictions"][0]["predicted_score"], "2-0")
+        self.assertTrue(data["settings"]["gemini_enabled"])
+
+        # .env varsayılanına dönüş
+        res = self.client.post("/api/admin/settings/gemini", json={"enabled": None}).get_json()
+        self.assertEqual((res["gemini"]["enabled"], res["gemini"]["source"]), (config.ENABLE_GEMINI_ANALYSIS, "env"))
+
+    def test_refresh_stats_keeps_nesine_only_fields(self):
+        table = {"LeagueTable": [{"Rank": 1, "TeamName": "Ev FK"}]}
+        with database.db_session(TEST_DB) as conn:
+            database.set_gemini_enabled(conn, True)
+            database.save_match_stats(conn, self.match_id, h2h_data=[{"score": "1-0"}], home_last=None,
+                                      away_last=None, missing=None, league_table=table)
+
+        live = {"h2h": [{"score": "3-3"}], "home_last": [{"score": "1-1"}], "away_last": []}
+        with mock.patch.object(gemini_engine, "fetch_live_team_stats", return_value=live):
+            self.assertEqual(self.client.post(f"/api/matches/{self.match_id}/refresh_stats").status_code, 200)
+
+        with database.db_session(TEST_DB) as conn:
+            ctx = database.get_match_full_context(conn, self.match_id)
+        self.assertEqual(ctx["h2h"], [{"score": "3-3"}])
+        self.assertEqual(ctx["league_table"], table)
+
+    def test_cli_reads_panel_setting(self):
+        import app
+        with database.db_session(TEST_DB) as conn:
+            database.set_gemini_enabled(conn, True)
+        with mock.patch("builtins.input", side_effect=AssertionError("soru sorulmamalı")):
+            self.assertTrue(app.confirm_when_gemini_disabled(None, "?", "iptal"))
+
+        with database.db_session(TEST_DB) as conn:
+            database.set_gemini_enabled(conn, False)
+        with mock.patch("builtins.input", return_value="hayır"), mock.patch("builtins.print"):
+            self.assertFalse(app.confirm_when_gemini_disabled(None, "?", "iptal"))
 
 if __name__ == "__main__":
     unittest.main()

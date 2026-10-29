@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maç Detayı | AI Betting Engine</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+    <header class="global-header">
+        <a class="brand" href="/">
+            <span class="brand-icon">⚽</span>
+            <span class="brand-text">AI Betting Engine</span>
+        </a>
+        <nav class="global-nav" aria-label="Ana menü">
+            <a class="global-nav-item active" href="/">Maçlar</a>
+            <a class="global-nav-item" href="/#admin">Lig Yönetimi</a>
+        </nav>
+        <div class="header-meta">Saatler: 🇩🇪 Europe/Berlin</div>
+    </header>
+
+    <main class="page" id="recordPage">
+        <div class="card"><div class="empty-state">Maç verileri yükleniyor... İstatistik kaydı yoksa Nesine'den çekileceği için bu işlem biraz sürebilir.</div></div>
+    </main>
+
+    <script src="{{ url_for('static', filename='common.js') }}"></script>
+    <script>
+        const MATCH_ID = {{ match_id | tojson }};
+        let ctx = null;
+        let activeTab = 'stats';
+
+        // ==================== VERİ YÜKLEME ====================
+        async function loadRecord() {
+            try {
+                const { data } = await api(`/api/matches/${MATCH_ID}/details`);
+                ctx = data;
+                document.title = `${ctx.match.home_team} - ${ctx.match.away_team} | AI Betting Engine`;
+                renderPage();
+            } catch (err) {
+                document.getElementById('recordPage').innerHTML = `
+                    <div class="breadcrumb"><a href="/">Maçlar</a></div>
+                    <div class="card"><div class="empty-state">
+                        <p class="text-error">Maç yüklenemedi: ${esc(err.message)}</p>
+                        <p style="margin-top:12px;"><a class="btn" href="/">← Maç listesine dön</a></p>
+                    </div></div>`;
+            }
+        }
+
+        // ==================== SAYFA ====================
+        // Gemini kapalıyken Gemini'ye istek atan butonlar devre dışı bırakılır
+        const geminiAttrs = () => ctx.settings.gemini_enabled ? '' : `disabled title="${esc(GEMINI_DISABLED_HINT)}"`;
+
+        function renderPage() {
+            const m = ctx.match;
+            const latest = ctx.predictions[0];
+            const geminiNotice = ctx.settings.gemini_enabled ? '' : `
+                <div class="notice"><span>⚠</span>
+                    <span>Gemini analizleri kapalı; <strong>Tahmin Al</strong> ve <strong>İnternetten Tara</strong> devre dışı. <a href="/#admin/settings">Ayarlar</a> sayfasından açabilirsiniz.</span>
+                </div>`;
+            const leagueNotice = ctx.settings.gemini_enabled && ctx.settings.require_league_approval && m.league_id && !m.league_gemini_analysis ? `
+                <div class="notice" style="background:var(--brand-light); color:var(--brand-dark); border-color:#c3d9ff;"><span>ℹ</span>
+                    <span>"${esc(m.league_name)}" ligi için Gemini izni kapalı. Tahmin alırken lig iznini açmanız istenecek.</span>
+                </div>` : '';
+            document.getElementById('recordPage').innerHTML = `
+                <div class="breadcrumb"><a href="/">Maçlar</a> › ${esc(m.code)}</div>
+                ${geminiNotice}${leagueNotice}
+
+                <div class="card page-header">
+                    <div class="page-header-top">
+                        <div class="page-header-title-area">
+                            <div class="object-icon">${m.sport_type === 'BASKETBALL' ? '🏀' : '⚽'}</div>
+                            <div style="min-width:0;">
+                                <div class="object-label">Maç</div>
+                                <h1 class="page-title">${esc(m.home_team)} <span class="muted">vs</span> ${esc(m.away_team)}</h1>
+                            </div>
+                        </div>
+                        <div class="btn-group" role="group" aria-label="Hızlı işlemler">
+                            <button class="btn" type="button" data-action="predict" ${geminiAttrs()}>🔮 ${latest ? 'Yeniden Tahmin Al' : 'Gemini Tahmini Al'}</button>
+                            <button class="btn" type="button" data-action="nesine">📊 Nesine İstatistikleri</button>
+                            <button class="btn" type="button" data-action="live" ${geminiAttrs()} ${ctx.settings.gemini_enabled ? 'title="Gemini + Google Search ile H2H ve son maçları internetten çeker"' : ''}>🌐 İnternetten Tara</button>
+                            <button class="btn btn-brand" type="button" data-action="score">⚽ ${ctx.result ? 'Skoru Düzenle' : 'Skor Gir'}</button>
+                        </div>
+                    </div>
+                    <div class="highlights">
+                        ${highlight('Maç Kodu', esc(m.code))}
+                        ${highlight('Lig', esc(m.league_name || '—'))}
+                        ${highlight('Tarih (DE)', `${esc(m.local_date)} <strong>${esc(m.local_time)}</strong>`)}
+                        ${highlight('Türkiye Saati', `${esc(m.tr_date)} ${esc(m.tr_time)}`)}
+                        ${highlight('Durum', statusBadge({ ...m, predicted_score: latest && latest.predicted_score }))}
+                        ${highlight('Lig Gemini İzni', m.league_gemini_analysis ? '<span class="badge badge-success">Açık</span>' : '<span class="badge">Kapalı</span>')}
+                        ${ctx.result ? highlight('Skor', `<span class="score">${ctx.result.ft_home_score} - ${ctx.result.ft_away_score}</span>`) : ''}
+                    </div>
+                </div>
+
+                <div class="record-layout">
+                    <section>
+                        <div class="card">
+                            <div class="tabs" role="tablist">
+                                ${tabButton('stats', 'İstatistikler')}
+                                ${tabButton('odds', `Oranlar (${ctx.odds.length})`)}
+                                ${tabButton('details', 'Detaylar')}
+                            </div>
+                            <div class="card-body tab-panel" data-panel="stats" ${activeTab !== 'stats' ? 'hidden' : ''}>${renderStatsTab()}</div>
+                            <div class="card-body tab-panel" data-panel="odds" ${activeTab !== 'odds' ? 'hidden' : ''}>${renderOddsTab()}</div>
+                            <div class="card-body tab-panel" data-panel="details" ${activeTab !== 'details' ? 'hidden' : ''}>${renderDetailsTab()}</div>
+                        </div>
+                    </section>
+                    <aside>
+                        ${renderPredictionCard(latest)}
+                        ${renderResultCard()}
+                        ${renderHistoryCard()}
+                    </aside>
+                </div>`;
+        }
+
+        const highlight = (label, valueHtml) =>
+            `<div><div class="highlight-label">${esc(label)}</div><div class="highlight-value">${valueHtml}</div></div>`;
+
+        const tabButton = (key, label) =>
+            `<button class="tab ${activeTab === key ? 'active' : ''}" type="button" role="tab" data-tab="${key}" aria-selected="${activeTab === key}">${esc(label)}</button>`;
+
+        // ==================== İSTATİSTİKLER SEKMESİ ====================
+        // Takımın bakış açısından maç sonucu: G (galibiyet), B (beraberlik), M (mağlubiyet)
+        function teamOutcome(item, team) {
+            const [h, a] = item.score.split('-').map(s => parseInt(s, 10));
+            if (Number.isNaN(h) || Number.isNaN(a) || !team) return null;
+            const isHome = item.home === team, isAway = item.away === team;
+            if (!isHome && !isAway) return null;
+            const diff = isHome ? h - a : a - h;
+            return diff > 0 ? 'G' : (diff < 0 ? 'M' : 'B');
+        }
+
+        const outcomeBadge = o => o === null ? '' :
+            `<span class="badge ${o === 'G' ? 'badge-success' : o === 'M' ? 'badge-error' : ''}" title="${o === 'G' ? 'Galibiyet' : o === 'M' ? 'Mağlubiyet' : 'Beraberlik'}">${o}</span>`;
+
+        function historyTable(items, team, emptyText) {
+            if (!Array.isArray(items) || items.length === 0) {
+                return `<div class="muted" style="padding:8px 0;">${esc(emptyText)}</div>`;
+            }
+            const rows = items.map(normalizeHistoryItem);
+            const outcomes = team ? rows.map(r => teamOutcome(r, team)) : [];
+            const form = outcomes.filter(o => o !== null);
+            const formHtml = form.length ? `<div style="margin-bottom:8px;" class="muted">Form: ${form.map(outcomeBadge).join(' ')}</div>` : '';
+            return formHtml + `
+                <div class="table-wrap"><table class="data-table">
+                    <thead><tr><th>Tarih</th><th>Lig</th><th style="text-align:right;">Ev Sahibi</th><th class="center">Skor</th><th>Deplasman</th>${team ? '<th class="center">Sonuç</th>' : ''}</tr></thead>
+                    <tbody>${rows.map((r, i) => `
+                        <tr>
+                            <td>${esc(r.date)}</td>
+                            <td class="truncate" title="${esc(r.league)}">${esc(r.league)}</td>
+                            <td style="text-align:right;" class="${r.home === team ? 'record-link' : ''}">${esc(r.home)}</td>
+                            <td class="center"><span class="score">${esc(r.score || '—')}</span></td>
+                            <td class="${r.away === team ? 'record-link' : ''}">${esc(r.away)}</td>
+                            ${team ? `<td class="center">${outcomeBadge(outcomes[i])}</td>` : ''}
+                        </tr>`).join('')}
+                    </tbody>
+                </table></div>`;
+        }
+
+        // Nesine eksik oyuncu formatı: { HomeTeamMissingPlayers: [{PlayerName, Reason}], AwayTeamMissingPlayers: [...] }
+        function renderMissing(missing) {
+            if (!missing || (typeof missing === 'object' && Object.keys(missing).length === 0)) return '';
+            const m = ctx.match;
+            const block = (team, players) => {
+                if (!Array.isArray(players)) return '';
+                const list = players.length
+                    ? players.map(p => `<li>${esc(p.PlayerName || p.Name || JSON.stringify(p))} <span class="muted">${esc(p.Reason || p.Status || '')}</span></li>`).join('')
+                    : '<li class="muted">Eksik oyuncu yok</li>';
+                return `<div><strong>${esc(team)}</strong><ul style="margin:4px 0 0 18px;">${list}</ul></div>`;
+            };
+            let body = block(m.home_team, missing.HomeTeamMissingPlayers) + block(m.away_team, missing.AwayTeamMissingPlayers);
+            if (!body) body = `<pre style="white-space:pre-wrap; font-size:12px;">${esc(JSON.stringify(missing, null, 2))}</pre>`;
+            return `<div class="section"><div class="section-title">🚑 Sakat / Cezalı Oyuncular</div><div class="field-grid">${body}</div></div>`;
+        }
+
+        // Nesine puan durumu formatı: { LeagueTable: [{Rank, TeamName, Played, Won, Draw, Lost, Points}] }
+        function renderLeagueTable(table) {
+            const rows = table && Array.isArray(table.LeagueTable) ? table.LeagueTable : null;
+            if (!rows || rows.length === 0) return '';
+            const teams = [ctx.match.home_team, ctx.match.away_team];
+            return `<div class="section"><div class="section-title">🏆 Puan Durumu</div>
+                <div class="table-wrap"><table class="data-table">
+                    <thead><tr><th class="num">#</th><th>Takım</th><th class="num">O</th><th class="num">G</th><th class="num">B</th><th class="num">M</th><th class="num">P</th></tr></thead>
+                    <tbody>${rows.map(r => `
+                        <tr style="${teams.includes(r.TeamName) ? 'background:var(--brand-light); font-weight:700;' : ''}">
+                            <td class="num">${esc(r.Rank)}</td><td>${esc(r.TeamName)}</td>
+                            <td class="num">${esc(r.Played)}</td><td class="num">${esc(r.Won)}</td><td class="num">${esc(r.Draw)}</td>
+                            <td class="num">${esc(r.Lost)}</td><td class="num"><strong>${esc(r.Points)}</strong></td>
+                        </tr>`).join('')}
+                    </tbody>
+                </table></div></div>`;
+        }
+
+        function renderStatsTab() {
+            const m = ctx.match;
+            const noData = !ctx.h2h?.length && !ctx.home_last?.length && !ctx.away_last?.length;
+            const hint = noData
+                ? `<p class="muted" style="margin-bottom:16px;">Bu maç için kayıtlı istatistik yok (Nesine veri döndürmedi). <strong>📊 Nesine İstatistikleri</strong> ile tekrar deneyebilir veya <strong>🌐 İnternetten Tara</strong> ile Gemini üzerinden internetten çekebilirsiniz.</p>`
+                : '';
+            return hint + `
+                <div class="section"><div class="section-title">⚔️ Aralarındaki Maçlar (H2H)</div>${historyTable(ctx.h2h, null, 'Kayıtlı ikili mücadele verisi yok.')}</div>
+                <div class="section"><div class="section-title">🏠 ${esc(m.home_team)} · Son Maçlar</div>${historyTable(ctx.home_last, m.home_team, 'Ev sahibi son maç verisi yok.')}</div>
+                <div class="section"><div class="section-title">✈️ ${esc(m.away_team)} · Son Maçlar</div>${historyTable(ctx.away_last, m.away_team, 'Deplasman son maç verisi yok.')}</div>
+                ${renderMissing(ctx.missing)}
+                ${renderLeagueTable(ctx.league_table)}`;
+        }
+
+        // ==================== ORANLAR SEKMESİ ====================
+        function renderOddsTab() {
+            if (ctx.odds.length === 0) return '<div class="empty-state">Bu maç için kayıtlı oran yok.</div>';
+            const groups = new Map();
+            ctx.odds.forEach(o => {
+                if (!groups.has(o.market_name)) groups.set(o.market_name, []);
+                groups.get(o.market_name).push(o);
+            });
+            return `<div class="table-wrap"><table class="data-table">
+                <thead><tr><th>Market</th><th>Seçenekler</th></tr></thead>
+                <tbody>${[...groups].map(([market, options]) => `
+                    <tr>
+                        <td><strong>${esc(market)}</strong></td>
+                        <td style="white-space:normal;">${options.map(o =>
+                            `<span class="badge" style="margin:2px 4px 2px 0;">${esc(o.option_name)} <span style="color:var(--brand-dark);">${Number(o.odds_value).toFixed(2)}</span></span>`
+                        ).join('')}</td>
+                    </tr>`).join('')}
+                </tbody>
+            </table></div>`;
+        }
+
+        // ==================== DETAYLAR SEKMESİ ====================
+        function renderDetailsTab() {
+            const m = ctx.match;
+            const field = (label, value) => `<div class="field"><div class="field-label">${esc(label)}</div><div class="field-value">${value}</div></div>`;
+            return `
+                <div class="section"><div class="section-title">Maç Bilgileri</div>
+                    <div class="field-grid">
+                        ${field('Maç Kodu', esc(m.code))}
+                        ${field('Lig', esc(m.league_name || '—'))}
+                        ${field('Ev Sahibi', esc(m.home_team))}
+                        ${field('Deplasman', esc(m.away_team))}
+                        ${field('Spor Türü', sportLabel(m.sport_type))}
+                        ${field('Durum', esc(m.status))}
+                        ${field('Tamamlandı', m.match_completed ? 'Evet' : 'Hayır')}
+                        ${field('Lig Gemini İzni', m.league_gemini_analysis ? 'Açık' : 'Kapalı')}
+                    </div>
+                </div>
+                <div class="section"><div class="section-title">Tarih &amp; Saat</div>
+                    <div class="field-grid">
+                        ${field('Tarih (Almanya)', esc(m.local_date))}
+                        ${field('Saat (Almanya)', esc(m.local_time))}
+                        ${field('Tarih (Türkiye)', esc(m.tr_date))}
+                        ${field('Saat (Türkiye)', esc(m.tr_time))}
+                    </div>
+                </div>
+                <div class="section"><div class="section-title">Sistem</div>
+                    <div class="field-grid">
+                        ${field('Kayıt ID', esc(m.id))}
+                        ${field('Kayıtlı Oran Sayısı', esc(ctx.odds.length))}
+                        ${field('Tahmin Sayısı', esc(ctx.predictions.length))}
+                        ${field('Sonuç Güncelleme', esc(ctx.result ? ctx.result.updated_at : '—'))}
+                    </div>
+                </div>`;
+        }
+
+        // ==================== YAN PANEL ====================
+        function predictionCell(label, value, correct) {
+            const mark = correct === true ? ' <span class="text-success" title="Tuttu">✓</span>'
+                : correct === false ? ' <span class="text-error" title="Tutmadı">✗</span>' : '';
+            return `<div class="prediction-cell"><div class="label">${esc(label)}</div><div class="value">${esc(value || '—')}${mark}</div></div>`;
+        }
+
+        function renderPredictionCard(p) {
+            if (!p) {
+                return `<div class="card">
+                    <div class="card-header"><div class="card-title">🔮 Gemini Tahmini</div></div>
+                    <div class="card-body"><p class="muted">Bu maç henüz analiz edilmedi.</p>
+                        <button class="btn btn-brand" type="button" data-action="predict" style="margin-top:12px;" ${geminiAttrs()}>🔮 Gemini Tahmini Al</button>
+                    </div></div>`;
+            }
+            const ev = p.evaluation || {};
+            return `<div class="card">
+                <div class="card-header">
+                    <div class="card-title">🔮 Gemini Tahmini</div>
+                    ${confidenceBadge(p.confidence_score)}
+                </div>
+                <div class="card-body">
+                    <div class="prediction-grid">
+                        ${predictionCell('Maç Sonu', p.predicted_ft_result, ev.ft)}
+                        ${predictionCell('İlk Yarı', p.predicted_ht_result, ev.ht)}
+                        ${predictionCell('3 Gol Alt / Üst', p.predicted_over_under_3, ev.over_under)}
+                        ${predictionCell('Karşılıklı Gol', p.predicted_kg, ev.kg)}
+                        ${predictionCell('Tahmini Skor', p.predicted_score, ev.score)}
+                        ${predictionCell('Güven', p.confidence_score !== null ? `%${p.confidence_score}` : null)}
+                    </div>
+                    ${p.ai_analysis_summary ? `<div class="analysis-text">${esc(p.ai_analysis_summary)}</div>` : ''}
+                    <div class="cell-sub" style="margin-top:8px;">Oluşturulma: ${esc(p.created_at)}</div>
+                </div></div>`;
+        }
+
+        function renderResultCard() {
+            const r = ctx.result;
+            const body = r
+                ? `<div class="result-score">${r.ft_home_score} - ${r.ft_away_score}</div>
+                   <div class="result-sub">İlk Yarı: ${r.ht_home_score ?? '—'} - ${r.ht_away_score ?? '—'}</div>
+                   <div class="result-badges">
+                       <span class="badge ${r.is_over_3_goals ? 'badge-purple' : ''}">3 Gol ${r.is_over_3_goals ? 'ÜST' : 'ALT'}</span>
+                       <span class="badge">${r.is_kg_var ? 'KG VAR' : 'KG YOK'}</span>
+                   </div>`
+                : `<p class="muted">${isCompleted(ctx.match) ? 'Maç tamamlandı, skor henüz girilmedi.' : 'Maç henüz oynanmadı.'}</p>`;
+            return `<div class="card">
+                <div class="card-header">
+                    <div class="card-title">🏁 Maç Sonucu</div>
+                    <button class="btn btn-sm" type="button" data-action="score">${r ? 'Düzenle' : 'Skor Gir'}</button>
+                </div>
+                <div class="card-body">${body}</div></div>`;
+        }
+
+        function renderHistoryCard() {
+            const items = ctx.predictions;
+            const body = items.length
+                ? items.map(p => `
+                    <div class="related-item">
+                        <div class="related-item-top">
+                            <strong>${esc(p.predicted_ft_result || '—')} · ${esc(p.predicted_score || '—')}</strong>
+                            ${confidenceBadge(p.confidence_score)}
+                        </div>
+                        <div class="cell-sub">${esc(p.predicted_ht_result || '—')} · ${esc(p.predicted_over_under_3 || '—')} · ${esc(p.predicted_kg || '—')} · ${esc(p.created_at)}</div>
+                    </div>`).join('')
+                : '<p class="muted">Kayıtlı tahmin yok.</p>';
+            return `<div class="card">
+                <div class="card-header"><div class="card-title">🕑 Tahmin Geçmişi (${items.length})</div></div>
+                <div class="card-body" style="padding-top:4px; padding-bottom:4px;">${body}</div></div>`;
+        }
+
+        // ==================== HIZLI İŞLEMLER (QUICK ACTIONS) ====================
+        // request: API isteğini yapan fonksiyon; null dönerse (kullanıcı vazgeçti) hiçbir şey yapılmaz
+        async function runAction(btn, busyLabel, request, successMessage, { switchToStats = false } = {}) {
+            await withBusyButton(btn, busyLabel, async () => {
+                try {
+                    const res = await request();
+                    if (!res) return;
+                    showToast(typeof successMessage === 'function' ? successMessage(res) : successMessage);
+                    if (switchToStats) activeTab = 'stats';
+                    await loadRecord();
+                } catch (err) {
+                    showToast(err.message, 'error');
+                    // Gemini başka bir sekmeden kapatılmış olabilir: butonları güncel duruma getir
+                    if (err.code === 'GEMINI_DISABLED') await loadRecord();
+                }
+            });
+        }
+
+        function openScoreModal() {
+            const r = ctx.result || {};
+            const m = ctx.match;
+            const input = (name, label, value) => `
+                <div class="form-field">
+                    <label for="${name}">${esc(label)}</label>
+                    <input class="input" id="${name}" name="${name}" type="number" min="0" max="99" step="1" required value="${value ?? ''}">
+                </div>`;
+            openModal({
+                title: ctx.result ? 'Skoru Düzenle' : 'Maç Skoru Gir',
+                confirmLabel: 'Kaydet',
+                bodyHtml: `
+                    <p class="muted" style="margin-bottom:16px;">${esc(m.home_team)} vs ${esc(m.away_team)}</p>
+                    <div class="form-grid">
+                        <div class="form-section-title">İlk Yarı</div>
+                        ${input('ht_home', `Ev Sahibi (${m.home_team})`, r.ht_home_score)}
+                        ${input('ht_away', `Deplasman (${m.away_team})`, r.ht_away_score)}
+                        <div class="form-section-title">Maç Sonu</div>
+                        ${input('ft_home', `Ev Sahibi (${m.home_team})`, r.ft_home_score)}
+                        ${input('ft_away', `Deplasman (${m.away_team})`, r.ft_away_score)}
+                    </div>
+                    <p class="cell-sub" style="margin-top:12px;">3 gol Alt/Üst (≥4 gol ÜST) ve KG durumu otomatik hesaplanır.</p>`,
+                onConfirm: async form => {
+                    const body = Object.fromEntries(['ht_home', 'ht_away', 'ft_home', 'ft_away'].map(k => [k, Number(form.elements[k].value)]));
+                    const res = await postJson(`/api/matches/${MATCH_ID}/result`, body);
+                    showToast(`Skor kaydedildi: ${body.ft_home}-${body.ft_away} (${res.over_under}, ${res.kg})`);
+                    await loadRecord();
+                }
+            });
+        }
+
+        const ACTIONS = {
+            predict: btn => runAction(btn, 'Gemini analiz ediyor', () => requestPrediction(MATCH_ID),
+                res => `Tahmin tamamlandı. Beklenen skor: ${res.prediction.predicted_score}`),
+            nesine: btn => runAction(btn, 'Nesine sorgulanıyor', () => postJson(`/api/matches/${MATCH_ID}/sync_stats`),
+                'Nesine istatistikleri güncellendi.', { switchToStats: true }),
+            live: btn => runAction(btn, 'İnternet taranıyor', () => postJson(`/api/matches/${MATCH_ID}/refresh_stats`),
+                'İstatistikler internetten çekildi ve kaydedildi.', { switchToStats: true }),
+            score: () => openScoreModal()
+        };
+
+        document.getElementById('recordPage').addEventListener('click', e => {
+            const actionBtn = e.target.closest('[data-action]');
+            if (actionBtn && ACTIONS[actionBtn.dataset.action]) {
+                ACTIONS[actionBtn.dataset.action](actionBtn);
+                return;
+            }
+            const tab = e.target.closest('[data-tab]');
+            if (tab) {
+                activeTab = tab.dataset.tab;
+                document.querySelectorAll('.tab').forEach(t => {
+                    t.classList.toggle('active', t === tab);
+                    t.setAttribute('aria-selected', t === tab);
+                });
+                document.querySelectorAll('.tab-panel').forEach(p => { p.hidden = p.dataset.panel !== activeTab; });
+            }
+        });
+
+        loadRecord();
+    </script>
+</body>
+</html>
