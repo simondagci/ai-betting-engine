@@ -6,7 +6,7 @@ iddaa.com (varsayılan) veya Nesine bülteninden futbol (ve basketbol) maçları
 
 | Dosya | İçerik | Durum |
 | :--- | :--- | :--- |
-| [Gemini.md](Gemini.md) | İş akışı, iş kuralları, DB şeması, config, Gemini prompt şablonu | **Ana kaynak (source of truth)** |
+| [Gemini.md](Gemini.md) | **Gemini kodlama asistanının bağlam dosyası** (bu dosyanın karşılığı): modüller, iş kuralları, kod kuralları, DB şeması, config, endpoint'ler, prompt özeti | **Bu dosyayla senkron tutulmalı** |
 | [mdFiles/APIs/iddaa/README.md](mdFiles/APIs/iddaa/README.md) | **iddaa.com API'leri** (varsayılan kaynak): bülten, istatistik, sonuç + Nesine karşılık tablosu | **Güncel** |
 | [mdFiles/APIs/01_bulten_api.md](mdFiles/APIs/01_bulten_api.md) | Nesine bülten servisi + `sg.EA[]` alan sözlüğü (`C`, `TYPE`, `HN`, `AN`, `MA`/`OCA`…). Uygulama içi bülten formatı hâlâ budur | Güncel (format referansı) |
 | [mdFiles/APIs/02_last_matches_api.md](mdFiles/APIs/02_last_matches_api.md) | Nesine: takımların son maçları | Türkiye dışından erişilemez |
@@ -17,7 +17,7 @@ iddaa.com (varsayılan) veya Nesine bülteninden futbol (ve basketbol) maçları
 | [IDDAA_API_ENDPOINTS.md](IDDAA_API_ENDPOINTS.md) | 6 API'nin tek dosyada özeti + curl örnekleri | `mdFiles/APIs/` ile mükerrer |
 | [SDSDIDDAA_ANALYSIS.md](SDSDIDDAA_ANALYSIS.md) | Eski Salesforce Apex projesinden göç raporu | **Tarihsel** — şema ve 2.5 gol sınırı artık geçerli değil |
 
-API davranışı değişirse `mdFiles/APIs/iddaa/README.md` (veya Nesine için `0X_*.md`) dosyasını güncelle; iş kuralı değişirse `Gemini.md`'yi güncelle.
+API davranışı değişirse `mdFiles/APIs/iddaa/README.md` (veya Nesine için `0X_*.md`) dosyasını güncelle; iş kuralı, mimari veya kod kuralı değişirse **`CLAUDE.md` ve `Gemini.md`'yi birlikte** güncelle. Gemini asistanı bu repoda paralel kod yazar; oturumlar arasında Gemini'nin yazdığı kod olabilir, varsaymadan önce oku.
 
 ## Modüller
 
@@ -61,7 +61,7 @@ python3 -m unittest test_app -v
 - **Gemini izinleri iki katmanlı:** genel anahtar **ve** `REQUIRE_LEAGUE_APPROVAL` açıksa yalnızca `leagues.gemini_analysis = 1` olan ligler. Yeni ligler varsayılan kapalı (`0`).
   - Genel anahtarın etkin değeri `database.is_gemini_enabled(conn)`: Web › Lig Yönetimi › Ayarlar'dan kaydedilen `settings` tablosu değeri, yoksa `.env` `ENABLE_GEMINI_ANALYSIS`. Kodda `config.ENABLE_GEMINI_ANALYSIS`'i doğrudan okuma.
   - Gemini'ye istek atan her web endpoint'i `_gemini_disabled_response` ile kontrol eder (403 `GEMINI_DISABLED`). Tek maç analizi lig izni kapalıysa 409 `LEAGUE_DISABLED` döner; `{"enable_league": true}` ile izin açılıp analiz yapılır.
-  - **En güçlü tercih (⭐):** Gemini sadece market seçer (`best_bet_market`); seçim değeri `gemini_engine.finalize_best_bet` ile ilgili tahmin alanından alınır, böylece tahminle çelişmez. Market anahtarları `rules.BEST_BET_MARKETS` (`ft` / `ht` / `over_under` / `kg`); değerlendirme `evaluate_prediction(...)["best_bet"]`. Lig bazında oran `database.get_league_prediction_stats` (maç başına son tahmin).
+  - **⭐ Değerli tercih (value bet):** Prompt'a sadece oranı `MIN_BEST_BET_ODDS` (1.30) ve üstü adaylar (`rules.bet_candidates`: MS, İY, 3 gol ALT/ÜST = 3.5 baremi, KG, Çifte Şans) oran ve piyasa olasılığıyla gider; Gemini kendi olasılığı x oran değeri en yüksek seçimi yazar (`best_bet_selection`) veya 'YOK'. `gemini_engine.finalize_best_bet` seçimin aday listesinde olduğunu ve beklenen değerin > 1 olduğunu doğrular. Değerli tercih tahminden farklı olabilir; değerlendirme `rules.selection_won` ile seçimin kendisine göre yapılır. Oran `predictions.best_bet_odds`'a yazılır.
 - **Son maçlar ve H2H yoksa Gemini'ye gönderilmez:** web (409 `MISSING_STATS`), lig analizi (`skipped`) ve terminal aynı kuralı `match_data.load_context_for_analysis` ile uygular (göndermeden önce veri kaynağından bir kez daha denenir).
 - **Gemini sadece maç analizi (tahmin) için kullanılır.** Maç detayları, son maçlar, H2H ve puan durumu yalnızca veri kaynağından (`data_source`) gelir; Gemini ile istatistik çekme (eski "İnternetten Tara" / `fetch_live_team_stats`) kaldırıldı, geri ekleme.
 - **Spor ayrımı:** bülten `TYPE "1"` = futbol, `"2"` = basketbol, `"-1"` = uzun vadeli (atlanır). Skor tipi futbolda `FT`, basketbolda `Current`; ilk yarı her ikisinde `HT`.
@@ -90,4 +90,3 @@ python3 -m unittest test_app -v
 - Arka plan işleri (istatistik, toplu analiz) web sunucusu sürecinde çalışır: uzun bir iş sürerken kod dosyası değiştirmek debug reloader'ı tetikler ve işi durdurur.
 - Arka plan istatistik işi web sunucusu sürecinde çalışır: sunucu yeniden başlarsa (debug reloader dahil) iş durur, tekrar başlatıldığında kalan maçlardan devam eder.
 - Dashboard `debug=True` ile çalışıyorsa Flask reloader dosya değişikliklerinde sunucuyu otomatik yeniden başlatır ve `update_expired_matches` gerçek DB'ye yazar. Düzenleme sırasında modül kısa süre bile import edilemez hale gelirse reloader kapanır; çok adımlı düzenlemelerde önce bağımlılıkları (import'lar, yardımcı fonksiyonlar) ekle.
-- `Gemini.md` şemasında `match_stats` tablosu (H2H, son maçlar, eksik oyuncu, puan tablosu JSON'ları) eksik — gerçek şema için `database.init_db`'ye bak.

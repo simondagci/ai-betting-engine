@@ -868,34 +868,68 @@ class TestBasketball(unittest.TestCase):
         self.assertEqual((accuracy["total_points_evaluated"], accuracy["total_points_avg_diff"]), (1, 21.0))
 
 class TestBestBet(unittest.TestCase):
-    """Gemini'nin en güçlü tercihi (⭐): tahminden türetilir, kaydedilir, sonuçla değerlendirilir, lig bazında raporlanır."""
+    """⭐ Değerli tercih (value bet): sadece oranı eşik üstü adaylardan, beklenen değeri > 1 olan seçim; seçimin kendisi değerlendirilir."""
 
-    def test_market_key_mapping(self):
-        cases = {"MS": "ft", "Maç Sonu": "ft", "İY": "ht", "ilk yarı": "ht", "ALT/ÜST": "over_under", "3 Gol Alt/Üst": "over_under",
-                 "KG": "kg", "Karşılıklı Gol": "kg", "Handikap": None, None: None}
-        for market, expected in cases.items():
-            self.assertEqual(rules.best_bet_market_key(market), expected, market)
-        self.assertIsNone(rules.best_bet_market_key("KG", "BASKETBALL"))
-        self.assertIsNone(rules.best_bet_market_key("ALT/ÜST", "BASKETBALL"))
-        self.assertEqual(rules.best_bet_market_key("MS", "BASKETBALL"), "ft")
+    ODDS = [
+        {"market_name": "Maç Sonucu", "option_name": "MS 1", "odds_value": 1.10},
+        {"market_name": "Maç Sonucu", "option_name": "MS 0", "odds_value": 7.50},
+        {"market_name": "Maç Sonucu", "option_name": "MS 2", "odds_value": 15.0},
+        {"market_name": "İlk Yarı Sonucu", "option_name": "İY 1", "odds_value": 1.55},
+        {"market_name": "3.5 Gol Alt/Üst", "option_name": "3.5 Alt", "odds_value": 1.30},
+        {"market_name": "3.5 Gol Alt/Üst", "option_name": "3.5 Üst", "odds_value": 3.10},
+        {"market_name": "Karşılıklı Gol", "option_name": "KG VAR", "odds_value": 1.85},
+        {"market_name": "Karşılıklı Gol", "option_name": "KG YOK", "odds_value": 1.80},
+        {"market_name": "Çifte Şans", "option_name": "X-2", "odds_value": 5.20},
+        {"market_name": "2.5 Gol Alt/Üst", "option_name": "2.5 Üst", "odds_value": 1.60},
+    ]
 
-    def test_finalize_best_bet_uses_prediction_value(self):
-        prediction = {"predicted_ft_result": "MS 1", "predicted_kg": "KG VAR", "predicted_over_under_3": "ALT",
-                      "best_bet_market": "KG", "best_bet_confidence": 81, "best_bet_reason": "İki takım da gol atıyor"}
-        result = gemini_engine._finalize(prediction, {"match": {"sport_type": "FOOTBALL"}, "odds": []})
-        self.assertEqual(result["best_bet"], {"market": "kg", "selection": "KG VAR", "confidence": 81, "reason": "İki takım da gol atıyor"})
-        self.assertNotIn("best_bet_market", result)
-        # Tanınmayan market -> ⭐ yok
-        unknown = gemini_engine._finalize({"predicted_ft_result": "MS 1", "best_bet_market": "Korner"}, {"match": {}, "odds": []})
-        self.assertIsNone(unknown["best_bet"])
+    def _ctx(self, sport="FOOTBALL", odds=None):
+        return {"match": {"home_team": "A", "away_team": "B", "sport_type": sport}, "odds": self.ODDS if odds is None else odds}
 
-    def test_schema_requires_best_bet(self):
+    def test_bet_candidates_respect_min_odds(self):
+        candidates = {(c["market"], c["selection"]): c["odds"] for c in rules.bet_candidates(self.ODDS, "FOOTBALL", 1.50)}
+        # MS 1 (1.10) ve ALT (1.30) eşiğin altında; 2.5 Gol marketi aday değil (futbolda Alt/Üst 3 gol = 3.5 baremi)
+        self.assertEqual(set(candidates), {("ft", "MS 0"), ("ft", "MS 2"), ("ht", "İY 1"), ("over_under", "ÜST"),
+                                           ("kg", "KG VAR"), ("kg", "KG YOK"), ("dc", "X-2")})
+        basketball = {c["market"] for c in rules.bet_candidates(self.ODDS, "BASKETBALL", 1.50)}
+        self.assertEqual(basketball, {"ft", "ht"})
+        self.assertEqual(rules.selection_odds(self.ODDS, "over_under", "ALT"), 1.30)
+
+    def test_selection_won(self):
+        result = {"ht_home_score": 0, "ht_away_score": 0, "ft_home_score": 1, "ft_away_score": 1}
+        cases = [("ft", "MS 0", True), ("ft", "MS 1", False), ("ht", "İY 0", True), ("over_under", "ALT", True),
+                 ("over_under", "ÜST", False), ("kg", "KG VAR", True), ("dc", "1-X", True), ("dc", "1-2", False),
+                 ("dc", "X-2", True), ("bilinmeyen", "x", None)]
+        for market, selection, expected in cases:
+            self.assertEqual(rules.selection_won(market, selection, result), expected, (market, selection))
+
+    def test_prompt_lists_only_value_candidates(self):
+        prompt = gemini_engine.build_prompt(self._ctx())
+        self.assertIn("--- DEĞERLİ TERCİH (best_bet) ---", prompt)
+        self.assertIn("- KG VAR (Karşılıklı Gol) | Oran 1.85 | Piyasa olasılığı %54", prompt)
+        self.assertIn("- X-2 (Çifte Şans) | Oran 5.20", prompt)
+        self.assertNotIn("- MS 1 (Maç Sonu)", prompt)   # 1.10: eşiğin altında
+        none_prompt = gemini_engine.build_prompt(self._ctx(odds=[{"market_name": "Maç Sonucu", "option_name": "MS 1", "odds_value": 1.05}]))
+        self.assertIn("'YOK'", none_prompt)
+
+    def test_finalize_best_bet(self):
+        def finalize(selection, confidence):
+            return gemini_engine._finalize({"predicted_ft_result": "MS 1", "best_bet_selection": selection,
+                                            "best_bet_confidence": confidence, "best_bet_reason": "gerekçe"}, self._ctx())["best_bet"]
+        self.assertEqual(finalize("kg var", 62), {"market": "kg", "selection": "KG VAR", "odds": 1.85, "confidence": 62, "reason": "gerekçe"})
+        self.assertIsNone(finalize("MS 1", 95))      # aday değil (oran 1.10 < 1.50)
+        self.assertIsNone(finalize("YOK", 0))
+        self.assertIsNone(finalize("KG VAR", 50))    # beklenen değer 0.50 x 1.85 = 0.93 <= 1
+        self.assertIsNone(finalize("Korner Üst", 80))
+
+    def test_schema_requires_value_bet_fields(self):
         from google import genai
         from google.genai import _transformers
         client = genai.Client(api_key="offline-test")._api_client
         for model in (gemini_engine.MatchPrediction, gemini_engine.BasketballPrediction):
             schema = _transformers.t_schema(client, model)
-            self.assertTrue({"best_bet_market", "best_bet_confidence", "best_bet_reason"} <= set(schema.required), model.__name__)
+            self.assertTrue({"best_bet_selection", "best_bet_confidence", "best_bet_reason"} <= set(schema.required), model.__name__)
+            self.assertNotIn("best_bet_market", schema.properties)
 
     def test_best_bet_saved_evaluated_and_league_stats(self):
         if os.path.exists(TEST_DB):
@@ -909,30 +943,32 @@ class TestBestBet(unittest.TestCase):
             league_id = database.get_or_create_league(conn, "Test Lig")
             m1 = database.save_match(conn, "BB1", "A", "B", "Test Lig", "01.01.2099", "20:00")
             m2 = database.save_match(conn, "BB2", "C", "D", "Test Lig", "01.01.2099", "21:00")
-            # m1: önce yanlış (KG), sonra doğru (MS) ⭐ tercih -> sadece SON tahmin sayılır
-            database.save_prediction(conn, m1, {**base, "best_bet": {"market": "kg", "selection": "KG YOK", "confidence": 60, "reason": "x"}})
-            database.save_prediction(conn, m1, {**base, "best_bet": {"market": "ft", "selection": "MS 1", "confidence": 80, "reason": "Ev sahibi formda"}})
-            database.save_prediction(conn, m2, {**base, "best_bet": {"market": "over_under", "selection": "ALT", "confidence": 75, "reason": "y"}})
+            database.save_odds(conn, m1, self.ODDS)
+            # m1: önce yanlış (MS 0), sonra doğru (KG VAR) değerli tercih -> lig oranında sadece SON tahmin sayılır
+            database.save_prediction(conn, m1, {**base, "best_bet": {"market": "ft", "selection": "MS 0", "odds": 7.5, "confidence": 20, "reason": "x"}})
+            database.save_prediction(conn, m1, {**base, "best_bet": {"market": "kg", "selection": "KG VAR", "odds": 1.85, "confidence": 62, "reason": "İki takım da gol atıyor"}})
+            # m2: eski tahmin (oran kayıtlı değil) -> çifte şans tuttu
+            database.save_prediction(conn, m2, {**base, "best_bet": {"market": "dc", "selection": "X-2", "confidence": 40, "reason": "y"}})
             database.save_match_stats(conn, m1, h2h_data=[{"score": "1-0"}], home_last=None, away_last=None, missing=None, league_table=None)
-            database.save_result(conn, m1, 1, 1, 2, 1)   # MS 1 tuttu, KG VAR oldu
-            database.save_result(conn, m2, 1, 1, 3, 2)   # 5 gol: ALT tutmadı
+            database.save_result(conn, m1, 1, 1, 2, 1)   # KG VAR tuttu, MS 0 tutmadı
+            database.save_result(conn, m2, 0, 1, 0, 2)   # deplasman kazandı: X-2 tuttu
 
         data = client.get(f"/api/matches/{m1}/details").get_json()["data"]
         latest = data["predictions"][0]
-        self.assertEqual(latest["best_bet"], {"market": "ft", "selection": "MS 1", "confidence": 80, "reason": "Ev sahibi formda"})
+        self.assertEqual(latest["best_bet"], {"market": "kg", "selection": "KG VAR", "odds": 1.85, "confidence": 62, "reason": "İki takım da gol atıyor"})
         self.assertTrue(latest["evaluation"]["best_bet"])
         self.assertFalse(data["predictions"][1]["evaluation"]["best_bet"])
 
         league = next(l for l in client.get("/api/admin/leagues").get_json()["leagues"] if l["id"] == league_id)
-        self.assertEqual((league["evaluated"], league["best_bet_total"], league["best_bet_correct"], league["best_bet_accuracy"]), (2, 2, 1, 50.0))
+        self.assertEqual((league["evaluated"], league["best_bet_total"], league["best_bet_correct"], league["best_bet_accuracy"]), (2, 2, 2, 100.0))
 
         completed = {m["code"]: m for m in client.get("/api/matches/completed").get_json()["matches"]}
-        self.assertEqual((completed["BB1"]["best_bet_correct"], completed["BB2"]["best_bet_correct"]), (True, False))
+        self.assertEqual((completed["BB1"]["best_bet_correct"], completed["BB2"]["best_bet_correct"]), (True, True))
+        self.assertEqual(completed["BB1"]["best_bet_odds"], 1.85)
         with database.db_session(TEST_DB) as conn:
             accuracy = database.calculate_prediction_accuracy(conn)
         os.remove(TEST_DB)
-        # Genel raporda her tahmin sayılır (m1'in iki tahmini + m2)
-        self.assertEqual((accuracy["best_bet_total"], accuracy["best_bet_correct"]), (3, 1))
+        self.assertEqual((accuracy["best_bet_total"], accuracy["best_bet_correct"]), (3, 2))
 
 class TestPredictionBatch(unittest.TestCase):
     """Toplu Gemini analizi: sadece uygun maçlar, arka planda, kota / hata durumunda kendiliğinden durur."""

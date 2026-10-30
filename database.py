@@ -37,7 +37,8 @@ _LATEST_PREDICTION_JOIN = """
 _PREDICTION_COLUMNS = """
     p.predicted_ht_result, p.predicted_ft_result, p.predicted_over_under_3,
     p.predicted_kg, p.predicted_score, p.confidence_score, p.ai_analysis_summary,
-    p.predicted_total_points, p.best_bet_market, p.best_bet_selection, p.best_bet_confidence, p.best_bet_reason
+    p.predicted_total_points, p.best_bet_market, p.best_bet_selection, p.best_bet_confidence, p.best_bet_reason,
+    p.best_bet_odds
 """
 
 # Gemini'ye gönderilebilir mi: son maçlar (iki takım) ve H2H dolu olmalı (bkz. match_data.REQUIRED_SECTIONS)
@@ -277,8 +278,9 @@ def init_db(db_path: str = DB_FILE) -> None:
         # Basketbol: Gemini'nin maç sonu toplam sayı tahmini (uzatmalar dahil)
         _ensure_column(cursor, "predictions", "predicted_total_points", "INTEGER")
         # Gemini'nin en güçlü tercihi (⭐): market anahtarı (ft / ht / over_under / kg), seçim, güven ve gerekçe
+        # best_bet_odds: değerli tercihin tahmin anındaki bülten oranı
         for column, ddl in (("best_bet_market", "TEXT"), ("best_bet_selection", "TEXT"),
-                            ("best_bet_confidence", "INTEGER"), ("best_bet_reason", "TEXT")):
+                            ("best_bet_confidence", "INTEGER"), ("best_bet_reason", "TEXT"), ("best_bet_odds", "REAL")):
             _ensure_column(cursor, "predictions", column, ddl)
 
         # Maç Sonuçları Tablosu (Başarı Oranı Takibi İçin)
@@ -708,8 +710,8 @@ def save_prediction(conn: sqlite3.Connection, match_id: int, prediction_data: Di
     cursor.execute("""
         INSERT INTO predictions (match_id, predicted_ht_result, predicted_ft_result, predicted_over_under_3, predicted_kg, predicted_score,
                                  confidence_score, ai_analysis_summary, predicted_total_points,
-                                 best_bet_market, best_bet_selection, best_bet_confidence, best_bet_reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 best_bet_market, best_bet_selection, best_bet_confidence, best_bet_reason, best_bet_odds)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         match_id,
         prediction_data.get("predicted_ht_result"),
@@ -723,7 +725,8 @@ def save_prediction(conn: sqlite3.Connection, match_id: int, prediction_data: Di
         best_bet.get("market"),
         best_bet.get("selection"),
         best_bet.get("confidence"),
-        best_bet.get("reason")
+        best_bet.get("reason"),
+        best_bet.get("odds")
     ))
     prediction_id = cursor.lastrowid
     cursor.execute("UPDATE matches SET status = 'ANALYZED' WHERE id = ? AND status != 'COMPLETED'", (match_id,))
@@ -787,6 +790,9 @@ def _enrich_matches(conn: sqlite3.Connection, rows: List[sqlite3.Row]) -> List[D
     for m in matches:
         add_local_time_fields(m)
         m["odds"] = odds_by_match.get(m["id"], [])
+        # Eski tahminlerde ⭐ oranı kayıtlı değil: bülten oranından tamamlanır
+        if m.get("best_bet_selection") and not m.get("best_bet_odds"):
+            m["best_bet_odds"] = rules.selection_odds(m["odds"], m.get("best_bet_market"), m["best_bet_selection"])
     return matches
 
 def get_matches_awaiting_results(conn: sqlite3.Connection, sport_type: str = "FOOTBALL",
@@ -981,12 +987,14 @@ def get_match_predictions(conn: sqlite3.Connection, match_id: int) -> List[Dict[
         WHERE p.match_id = ?
         ORDER BY p.id DESC
     """, (match_id,)).fetchall()
+    odds = [dict(r) for r in conn.execute("SELECT market_name, option_name, odds_value FROM odds WHERE match_id = ?", (match_id,))]
     predictions = []
     for row in rows:
         prediction = dict(row)
         prediction["best_bet"] = ({
             "market": prediction["best_bet_market"], "selection": prediction["best_bet_selection"],
-            "confidence": prediction["best_bet_confidence"], "reason": prediction["best_bet_reason"]
+            "confidence": prediction["best_bet_confidence"], "reason": prediction["best_bet_reason"],
+            "odds": prediction["best_bet_odds"] or rules.selection_odds(odds, prediction["best_bet_market"], prediction["best_bet_selection"])
         } if prediction["best_bet_market"] else None)
         predictions.append(prediction)
     return predictions
@@ -1029,7 +1037,7 @@ def calculate_prediction_accuracy(conn: sqlite3.Connection) -> Dict[str, Any]:
         SELECT
             m.sport_type,
             p.predicted_ht_result, p.predicted_ft_result, p.predicted_over_under_3, p.predicted_kg, p.predicted_score,
-            p.predicted_total_points, p.best_bet_market,
+            p.predicted_total_points, p.best_bet_market, p.best_bet_selection,
             r.ht_home_score, r.ht_away_score, r.ft_home_score, r.ft_away_score, r.is_over_3_goals, r.is_kg_var
         FROM predictions p
         JOIN results r ON p.match_id = r.match_id

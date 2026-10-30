@@ -77,7 +77,7 @@
                     <table class="data-table">
                         <thead id="matchesHead"></thead>
                         <tbody id="matchesBody">
-                            <tr><td class="empty-state" colspan="16">Maçlar yükleniyor...</td></tr>
+                            <tr><td class="empty-state" colspan="17">Maçlar yükleniyor...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -161,7 +161,7 @@
                                 <th class="num">Bitmemiş</th>
                                 <th class="num">Analizli</th>
                                 <th class="num" title="Sonucu girilmiş ve Gemini tahmini olan maç sayısı">Değerlendirilen</th>
-                                <th class="num" title="Gemini'nin en güçlü tercihinin (⭐) tutma oranı">⭐ İsabet</th>
+                                <th class="num" title="Gemini'nin değerli tercihinin (⭐) tutma oranı">⭐ İsabet</th>
                                 <th class="center">Gemini İzni</th>
                                 <th></th>
                             </tr>
@@ -315,8 +315,9 @@
                 { key: 'kg', label: 'KG Var', num: true, sort: m => m._odds.kg },
                 { key: 'prediction', label: 'Gemini Tahmini', sort: m => m.predicted_score || '' },
                 { key: 'confidence_score', label: 'Güven', sort: m => m.confidence_score ?? -1 },
-                // Gemini'nin en güçlü tercihi (⭐) ve gerçekleşme olasılığı
+                // Gemini'nin değerli tercihi (⭐), bülten oranı ve Gemini'nin tahmin ettiği gerçekleşme olasılığı
                 { key: 'best_bet_selection', label: 'Önerilen Tercih', sort: m => m.best_bet_selection || null },
+                { key: 'best_bet_odds', label: 'Oran', num: true, sort: m => m.best_bet_odds ?? null },
                 { key: 'best_bet_confidence', label: 'Tercih %', num: true, sort: m => m.best_bet_confidence ?? null },
             ];
             if (isCompletedView()) {
@@ -330,7 +331,7 @@
 
         async function loadMatches({ silent = false } = {}) {
             if (!silent) {
-                document.getElementById('matchesBody').innerHTML = `<tr><td class="empty-state" colspan="16">Maçlar yükleniyor...</td></tr>`;
+                document.getElementById('matchesBody').innerHTML = `<tr><td class="empty-state" colspan="17">Maçlar yükleniyor...</td></tr>`;
             }
             // Gemini durumu satırdaki 🔮 butonunu etkilediği için tablo istatistiklerle birlikte çizilir
             const statsLoaded = loadStats();
@@ -340,7 +341,7 @@
                 renderMatches();
             } catch (err) {
                 document.getElementById('matchesBody').innerHTML =
-                    `<tr><td class="empty-state text-error" colspan="16">Maçlar alınamadı: ${esc(err.message)}</td></tr>`;
+                    `<tr><td class="empty-state text-error" colspan="17">Maçlar alınamadı: ${esc(err.message)}</td></tr>`;
             }
         }
 
@@ -394,8 +395,9 @@
             const bestBetMark = m.best_bet_correct === true ? ' <span class="text-success" title="Tuttu">✓</span>'
                 : m.best_bet_correct === false ? ' <span class="text-error" title="Tutmadı">✗</span>' : '';
             const bestBetCell = m.best_bet_selection
-                ? `<span class="badge badge-gold" title="Gemini'nin en güçlü tercihi">⭐ ${esc(m.best_bet_selection)}</span>${bestBetMark}`
+                ? `<span class="badge badge-gold" title="Gemini'nin değerli tercihi">⭐ ${esc(m.best_bet_selection)}</span>${bestBetMark}`
                 : '<span class="muted">—</span>';
+            const bestBetOdds = m.best_bet_odds ? `<strong>${Number(m.best_bet_odds).toFixed(2)}</strong>` : '<span class="muted">—</span>';
             const bestBetConfidence = m.best_bet_confidence !== null && m.best_bet_confidence !== undefined
                 ? `<strong>%${esc(m.best_bet_confidence)}</strong>` : '<span class="muted">—</span>';
 
@@ -436,6 +438,7 @@
                     <td>${prediction}</td>
                     <td>${confidenceBadge(m.confidence_score)}</td>
                     <td>${bestBetCell}</td>
+                    <td class="num">${bestBetOdds}</td>
                     <td class="num">${bestBetConfidence}</td>
                     <td>${lastCell}</td>
                     <td>${action}</td>
@@ -455,7 +458,7 @@
 
             if (rows.length === 0) {
                 const msg = state.matches.length === 0 ? `"${viewName}" görünümünde kayıt yok.` : 'Arama ve filtrelere uygun maç bulunamadı.';
-                body.innerHTML = `<tr><td class="empty-state" colspan="16">${esc(msg)}</td></tr>`;
+                body.innerHTML = `<tr><td class="empty-state" colspan="17">${esc(msg)}</td></tr>`;
                 return;
             }
             body.innerHTML = rows.map(renderRow).join('');
