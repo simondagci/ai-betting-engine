@@ -32,10 +32,22 @@ MIN_CONFIDENCE_FOR_COUPON = int(os.getenv("MIN_CONFIDENCE_FOR_COUPON", "70"))
 # 7. Toplu Analizlerde İstekler Arası Bekleme Süresi (Saniye)
 BATCH_REQUEST_DELAY = float(os.getenv("BATCH_REQUEST_DELAY", "1.5"))
 
+# Toplu analizde (Maçları Analiz Et) aynı anda Gemini'ye gönderilen maç sayısı.
+# Artırmak hızlandırır ama Gemini dakika başı istek limitine (429) takılma riskini artırır.
+GEMINI_PARALLEL_REQUESTS = max(1, int(os.getenv("GEMINI_PARALLEL_REQUESTS", "3")))
+
+# Tek bir Gemini isteği için zaman aşımı (saniye). İnternet koparsa / bilgisayar uyursa istek sonsuza kadar beklemez.
+GEMINI_TIMEOUT_SECONDS = max(10, int(os.getenv("GEMINI_TIMEOUT_SECONDS", "120")))
+
 # 8. Veritabanı Dosya Yolu
 DB_FILE_PATH = os.getenv("DB_FILE_PATH", os.path.join(os.path.dirname(__file__), "betting_engine.db"))
 
-# 9. Servis URL Yapılandırmaları
+# 9. Veri Kaynağı ve Servis URL Yapılandırmaları
+# 'iddaa' (varsayılan): bülten, oran, istatistik ve sonuçlar iddaa.com'dan alınır.
+# 'nesine': Nesine servisleri (istatistik servisleri Türkiye dışından erişimi engeller).
+DATA_SOURCE = os.getenv("DATA_SOURCE", "iddaa").strip().lower()
+IDDAA_SPORTSBOOK_URL = os.getenv("IDDAA_SPORTSBOOK_URL", "https://sportsbookv2.iddaa.com")
+IDDAA_STATS_URL = os.getenv("IDDAA_STATS_URL", "https://statisticsv2.iddaa.com")
 NESINE_BULLETIN_URL = os.getenv("NESINE_BULLETIN_URL", "https://bulten.nesine.com/api/bulten/getprebultenfull")
 NESINE_STATS_BASE_URL = os.getenv("NESINE_STATS_BASE_URL", "https://istatistik.nesine.com/api/v2")
 NESINE_LIVESCORE_URL = os.getenv("NESINE_LIVESCORE_URL", "https://ls.nesine.com/api/v1/LiveScore/GetIddaaResultObjectList")

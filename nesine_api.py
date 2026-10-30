@@ -90,13 +90,42 @@ def _classify_market(market: Dict[str, Any]) -> Optional[MarketSpec]:
         return market["MN"], None, None
     return None
 
+# Basketbol market alt tipleri (MST): futbol kodlarıyla çakıştığı için ayrı sınıflandırılır
+BASKETBALL_MATCH_RESULT_MST = 2
+BASKETBALL_FIRST_HALF_RESULT_MST = 621
+BASKETBALL_TOTAL_POINTS_MST = 114
+BASKETBALL_TOTAL_POINTS_MARKET = "Toplam Sayı Alt/Üst"
+
+def _format_line(value: Any) -> str:
+    """Barem değerini metne çevirir: 237.5 -> '237.5', 3.0 -> '3'."""
+    return f"{value:g}" if isinstance(value, float) else str(value)
+
+def _classify_basketball_market(market: Dict[str, Any]) -> Optional[MarketSpec]:
+    """
+    Basketbol marketleri: MS (uzatmalar dahil, beraberlik yok), İlk Yarı Sonucu ve ana Toplam Sayı Alt/Üst baremi
+    standart isimlerle; diğerleri bültendeki market / seçenek isimleriyle (örn. 'Handikaplı Maç Sonucu -2.5') döner.
+    """
+    mst, sov = market.get("MST"), market.get("SOV")
+    if mst == BASKETBALL_MATCH_RESULT_MST:
+        return "Maç Sonucu", {1: "MS 1", 2: "MS 2"}, "MS {}"
+    if mst == BASKETBALL_FIRST_HALF_RESULT_MST:
+        return "İlk Yarı Sonucu", {1: "İY 1", 2: "İY 0", 3: "İY 2"}, "İY {}"
+    if mst == BASKETBALL_TOTAL_POINTS_MST and sov is not None:
+        line = _format_line(sov)
+        return BASKETBALL_TOTAL_POINTS_MARKET, {1: f"{line} Alt", 2: f"{line} Üst"}, "Seçenek {}"
+    if market.get("MN"):
+        return market["MN"], None, None
+    return None
+
 def extract_odds_from_event(event: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Nesine bülten maç objesindeki (MA dizisi) piyasa ve oranları okunabilir isimlerle parse eder.
+    Basketbol etkinlikleri (TYPE == '2') kendi market kodlarıyla ayrı sınıflandırılır.
     """
+    classify = _classify_basketball_market if str(event.get("TYPE")) == "2" else _classify_market
     odds_list = []
     for market in event.get("MA") or []:
-        spec = _classify_market(market)
+        spec = classify(market)
         if spec is None:
             continue
         market_name, labels, fallback = spec
@@ -128,9 +157,10 @@ def fetch_bulletin() -> List[Dict[str, Any]]:
             events = sg.get("EA", [])
             leagues = {str(item.get("LID")): item.get("N") for item in sg.get("LA", [])}
 
-            # Her maça lig ismini ata
+            # Her maça lig ismini ve lig ID'sini (iddaa.com ile aynı) ata
             for event in events:
                 event["league_name"] = leagues.get(str(event.get("LC")), event.get("ENN") or "Genel Lig")
+                event["league_external_id"] = event.get("LC")
             return events
     except Exception as e:
         print(f"Bülten çekilirken hata oluştu: {e}")

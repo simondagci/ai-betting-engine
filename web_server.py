@@ -7,11 +7,16 @@ from typing import Any, Dict, Optional, Tuple
 from flask import Flask, render_template, jsonify, request
 import database
 import config
-import nesine_api
+import data_source
 import gemini_engine
+import match_data
+import prediction_batch
 import rules
+import stats_sync
 
 MAX_SCORE = 99
+# Basketbol skorlarında üst sınır yoktur (sadece negatif olmayan tam sayı kontrolü)
+MAX_SCORE_BY_SPORT = {"FOOTBALL": MAX_SCORE, "BASKETBALL": None}
 
 app = Flask(__name__, template_folder=os.path.join(os.path.dirname(__file__), "templates"))
 
@@ -20,17 +25,6 @@ database.init_db()
 
 def _match_not_found():
     return jsonify({"success": False, "error": "Maç bulunamadı"}), 404
-
-def _fetch_live_stats(match: Dict[str, Any]) -> Dict[str, Any]:
-    """Gemini Google Search ile H2H ve son maç verilerini internetten çeker (save_match_stats parametre formatında)."""
-    live = gemini_engine.fetch_live_team_stats(match["home_team"], match["away_team"])
-    return {
-        "h2h_data": live.get("h2h") or [],
-        "home_last": live.get("home_last") or [],
-        "away_last": live.get("away_last") or [],
-        "missing": None,
-        "league_table": None
-    }
 
 def _gemini_disabled_response(conn) -> Optional[Tuple[Any, int]]:
     """Genel Gemini anahtarı kapalıysa 403 yanıtı döner; açıksa None. Gemini'ye istek atan her endpoint bunu kontrol eder."""
@@ -42,24 +36,14 @@ def _gemini_disabled_response(conn) -> Optional[Tuple[Any, int]]:
         "error": "Gemini analizleri kapalı. Lig Yönetimi › Ayarlar sayfasından açabilirsiniz."
     }), 403
 
-def _merge_stats(ctx: Dict[str, Any], fetched: Dict[str, Any]) -> Dict[str, Any]:
-    """Yeni çekilen istatistiklerden sadece dolu olanları kullanır; boş alanlarda mevcut kayıtlı veriyi korur."""
-    existing = {
-        "h2h_data": ctx["h2h"],
-        "home_last": ctx["home_last"],
-        "away_last": ctx["away_last"],
-        "missing": ctx["missing"],
-        "league_table": ctx["league_table"]
-    }
-    return {key: fetched.get(key) or existing[key] for key in existing}
-
-def _parse_score(data: Dict[str, Any], key: str) -> int:
+def _parse_score(data: Dict[str, Any], key: str, max_score: Optional[int] = MAX_SCORE) -> int:
+    """Negatif olmayan tam sayı skoru doğrular; max_score None ise üst sınır uygulanmaz."""
     value = data.get(key)
     if isinstance(value, bool):
         raise ValueError(key)
     if isinstance(value, str) and value.strip().isdigit():
         value = int(value.strip())
-    if not isinstance(value, int) or not 0 <= value <= MAX_SCORE:
+    if not isinstance(value, int) or value < 0 or (max_score is not None and value > max_score):
         raise ValueError(key)
     return value
 
@@ -106,8 +90,8 @@ def api_completed_matches():
 def api_match_details(match_id: int):
     """
     Maçın son maç istatistiklerini, H2H geçmişini, sakatlıkları, tahminlerini ve sonucunu döner.
-    Veritabanında H2H/Son maçlar yoksa sadece ücretsiz Nesine servisleri denenir.
-    Gemini (Google Search) sayfa açılışında ASLA çağrılmaz; sadece 'İnternetten Tara' butonuyla (refresh_stats) çalışır.
+    Veritabanında H2H/Son maçlar yoksa veri kaynağı (iddaa.com / Nesine) servisleri denenir.
+    Gemini maç detayı / istatistik çekmek için hiçbir zaman kullanılmaz; sadece maç analizi (analyze) içindir.
     """
     with database.db_session() as conn:
         ctx = database.get_match_full_context(conn, match_id)
@@ -115,9 +99,9 @@ def api_match_details(match_id: int):
             return _match_not_found()
 
         if not ctx.get("h2h") and not ctx.get("home_last"):
-            fetched = nesine_api.fetch_match_stats(ctx["match"]["code"])
+            fetched = data_source.fetch_match_stats(ctx["match"]["code"], ctx["match"]["sport_type"])
             if any(fetched.values()):
-                database.save_match_stats(conn, match_id, **_merge_stats(ctx, fetched))
+                database.save_match_stats(conn, match_id, **match_data.merge_stats(ctx, fetched))
                 conn.commit()
                 ctx = database.get_match_full_context(conn, match_id)
 
@@ -125,8 +109,10 @@ def api_match_details(match_id: int):
         ctx["result"] = database.get_match_result(conn, match_id)
         if ctx["result"]:
             for prediction in ctx["predictions"]:
-                prediction["evaluation"] = rules.evaluate_prediction(prediction, ctx["result"])
+                sport_type = ctx["match"]["sport_type"]
+                prediction["evaluation"] = rules.evaluate_prediction(prediction, ctx["result"], sport_type)
         ctx["settings"] = {
+            "data_source": data_source.source_name(),
             "gemini_enabled": database.is_gemini_enabled(conn),
             "require_league_approval": config.REQUIRE_LEAGUE_APPROVAL
         }
@@ -138,58 +124,47 @@ def api_match_details(match_id: int):
         "data": ctx
     })
 
-@app.route("/api/matches/<int:match_id>/refresh_stats", methods=["POST"])
-def api_refresh_match_stats(match_id: int):
-    """Google Search ile maçın H2H ve son maç verilerini canlı olarak internetten çeker ve veritabanına kaydeder."""
-    with database.db_session() as conn:
-        ctx = database.get_match_full_context(conn, match_id)
-        if not ctx:
-            return _match_not_found()
-        disabled = _gemini_disabled_response(conn)
-        if disabled:
-            return disabled
-
-        # Gemini sadece H2H / son maçları döner; Nesine'den gelmiş eksik oyuncu ve puan durumu korunur
-        database.save_match_stats(conn, match_id, **_merge_stats(ctx, _fetch_live_stats(ctx["match"])))
-        conn.commit()
-        ctx = database.get_match_full_context(conn, match_id)
-    return jsonify({
-        "success": True,
-        "data": ctx
-    })
-
 @app.route("/api/matches/<int:match_id>/sync_stats", methods=["POST"])
 def api_sync_match_stats(match_id: int):
-    """Nesine istatistik servislerinden (H2H, son maçlar, eksikler, puan durumu) veriyi çekip kaydeder."""
+    """Veri kaynağının (iddaa.com / Nesine) istatistik servislerinden H2H, son maçlar ve puan durumunu çekip kaydeder."""
     with database.db_session() as conn:
         ctx = database.get_match_full_context(conn, match_id)
         if not ctx:
             return _match_not_found()
 
-        fetched = nesine_api.fetch_match_stats(ctx["match"]["code"])
+        fetched = data_source.fetch_match_stats(ctx["match"]["code"], ctx["match"]["sport_type"])
         if not any(fetched.values()):
-            return jsonify({"success": False, "error": "Nesine bu maç için istatistik verisi döndürmedi."}), 502
+            return jsonify({"success": False, "error": f"{data_source.source_name()} bu maç için istatistik verisi döndürmedi."}), 502
 
-        # Sadece Nesine'nin dolu döndürdüğü alanları güncelle; boş alanlarda mevcut (örn. Gemini ile çekilmiş) veriyi koru
-        database.save_match_stats(conn, match_id, **_merge_stats(ctx, fetched))
+        # Sadece kaynağın dolu döndürdüğü alanları güncelle; boş alanlarda mevcut (örn. Gemini ile çekilmiş) veriyi koru
+        database.save_match_stats(conn, match_id, **match_data.merge_stats(ctx, fetched))
     return jsonify({"success": True, "updated_fields": [key for key, value in fetched.items() if value]})
 
 @app.route("/api/matches/<int:match_id>/result", methods=["POST"])
 def api_save_match_result(match_id: int):
-    """Biten maçın ilk yarı ve maç sonu skorunu kaydeder (3 gol ve KG durumu otomatik hesaplanır)."""
+    """
+    Biten maçın ilk yarı ve maç sonu skorunu kaydeder.
+    Futbolda 3 gol ve KG durumu, basketbolda maç sonu toplam sayı döner.
+    """
     data = request.get_json(silent=True) or {}
-    try:
-        ht_home, ht_away, ft_home, ft_away = (_parse_score(data, k) for k in ("ht_home", "ht_away", "ft_home", "ft_away"))
-    except ValueError as e:
-        return jsonify({"success": False, "error": f"Geçersiz skor değeri: {e} (0-{MAX_SCORE} arası tam sayı olmalı)"}), 400
-    if ht_home > ft_home or ht_away > ft_away:
-        return jsonify({"success": False, "error": "İlk yarı skoru maç sonu skorundan büyük olamaz."}), 400
-
     with database.db_session() as conn:
-        if not database.get_match_full_context(conn, match_id):
+        ctx = database.get_match_full_context(conn, match_id)
+        if not ctx:
             return _match_not_found()
+        sport_type = ctx["match"]["sport_type"]
+        max_score = MAX_SCORE_BY_SPORT.get(sport_type, MAX_SCORE)
+        try:
+            ht_home, ht_away, ft_home, ft_away = (_parse_score(data, k, max_score) for k in ("ht_home", "ht_away", "ft_home", "ft_away"))
+        except ValueError as e:
+            limit = f"0-{max_score} arası" if max_score is not None else "0 veya daha büyük"
+            return jsonify({"success": False, "error": f"Geçersiz skor değeri: {e} ({limit} tam sayı olmalı)"}), 400
+        if ht_home > ft_home or ht_away > ft_away:
+            return jsonify({"success": False, "error": "İlk yarı skoru maç sonu skorundan büyük olamaz."}), 400
+
         database.save_result(conn, match_id, ht_home, ht_away, ft_home, ft_away)
 
+    if rules.is_basketball(sport_type):
+        return jsonify({"success": True, "total_points": ft_home + ft_away})
     return jsonify({
         "success": True,
         "over_under": rules.over_under_label(ft_home, ft_away),
@@ -198,11 +173,14 @@ def api_save_match_result(match_id: int):
 
 @app.route("/api/admin/sync_bulletin", methods=["POST"])
 def api_sync_bulletin():
-    """Güncel Nesine bültenini çekip yeni maçları ve oranları veritabanına kaydeder (mevcut maçlar atlanır)."""
+    """
+    Veri kaynağından güncel bülteni çekip yeni maçları ve oranları veritabanına kaydeder (mevcut maçlar atlanır).
+    Ardından istatistiği olmayan tüm bitmemiş maçlar için arka plan istatistik işi başlatılır (ilerleme: /api/admin/jobs/stats).
+    """
     data = request.get_json(silent=True) or {}
     allowed_types = ("1", "2") if data.get("include_basketball") else ("1",)
 
-    events = nesine_api.fetch_bulletin()
+    events = data_source.fetch_bulletin()
     if not events:
         return jsonify({"success": False, "error": "Bültenden maç verisi çekilemedi. İnternet bağlantısını kontrol edin."}), 502
 
@@ -216,26 +194,126 @@ def api_sync_bulletin():
         )
     return jsonify({
         "success": True,
+        "source": data_source.source_name(),
         "total_events": len(events),
         "expired": expired_count,
+        "stats_job": stats_sync.start_background(),
         **sync_res
     })
+
+MAX_RESULT_DAYS = 14
+
+@app.route("/api/admin/sync_results", methods=["POST"])
+def api_sync_results():
+    """
+    Tamamlanmış ama skoru girilmemiş futbol ve basketbol maçlarının (son 'days' gün) sonuçlarını veri kaynağından çekip kaydeder.
+    Sadece normal süresinde biten maçlar yazılır (futbolda ilk yarı skoru da bilinmeli); diğerleri 'missing' olarak raporlanır.
+    """
+    if not data_source.supports_results():
+        return jsonify({"success": False, "error": f"{data_source.source_name()} otomatik sonuç çekmeyi desteklemiyor."}), 400
+    data = request.get_json(silent=True) or {}
+    days = min(max(int(data.get("days") or 7), 1), MAX_RESULT_DAYS)
+
+    with database.db_session() as conn:
+        database.update_expired_matches(conn)
+        awaiting = [
+            {**m, "sport_type": sport}
+            for sport in (rules.FOOTBALL, rules.BASKETBALL)
+            for m in database.get_matches_awaiting_results(conn, sport_type=sport, days=days)
+        ]
+    requests_needed = sorted({(m["result_date"], m["sport_type"]) for m in awaiting})
+
+    # Ağ istekleri DB bağlantısı açık tutulmadan yapılır
+    results_by_code: Dict[str, Dict[str, Any]] = {}
+    for date_str, sport in requests_needed:
+        for res in data_source.fetch_match_results(date_str, is_basketball=rules.is_basketball(sport)) or []:
+            results_by_code[res["code"]] = res
+
+    updated = []
+    with database.db_session() as conn:
+        for match in awaiting:
+            res = results_by_code.get(str(match["code"]))
+            if not res:
+                continue
+            # Futbolda İY tahmini değerlendirildiği için ilk yarı skoru zorunlu; basketbolda yoksa boş bırakılır
+            if not rules.is_basketball(match["sport_type"]) and (res["ht_home"] is None or res["ht_away"] is None):
+                continue
+            database.save_result(conn, match["id"], res["ht_home"], res["ht_away"], res["ft_home"], res["ft_away"])
+            updated.append({"code": match["code"], "score": f"{res['ft_home']}-{res['ft_away']}"})
+
+    return jsonify({
+        "success": True,
+        "source": data_source.source_name(),
+        "days": days,
+        "checked_dates": sorted({date_str for date_str, _ in requests_needed}),
+        "awaiting": len(awaiting),
+        "updated_count": len(updated),
+        "missing_count": len(awaiting) - len(updated),
+        "updated": updated
+    })
+
+@app.route("/api/admin/sync_stats", methods=["POST"])
+def api_sync_stats_batch():
+    """İstatistiği olmayan tüm bitmemiş maçlar için arka plan istatistik işini başlatır (zaten çalışıyorsa mevcut durumu döner)."""
+    return jsonify({"success": True, "source": data_source.source_name(), "job": stats_sync.start_background()})
+
+@app.route("/api/admin/jobs/stats")
+def api_stats_job_status():
+    """Arka plan istatistik işinin ilerlemesi (ilerleme çubuğu için)."""
+    return jsonify({"success": True, "job": stats_sync.get_status()})
+
+@app.route("/api/admin/jobs/stats/cancel", methods=["POST"])
+def api_stats_job_cancel():
+    """Arka plan istatistik işini, o an işlenen maç bittikten sonra durdurur."""
+    return jsonify({"success": True, "job": stats_sync.cancel()})
+
+@app.route("/api/admin/jobs/predictions")
+def api_prediction_job_status():
+    """Toplu Gemini analizinin ilerlemesi ve şu an analize uygun (bitmemiş, analiz edilmemiş, verisi tam) maç sayısı."""
+    return jsonify({
+        "success": True,
+        "job": prediction_batch.get_status(),
+        "eligible": len(prediction_batch.eligible_matches())
+    })
+
+@app.route("/api/admin/jobs/predictions/start", methods=["POST"])
+def api_prediction_job_start():
+    """Analize uygun tüm maçlar için arka planda Gemini analizini başlatır (zaten çalışıyorsa mevcut durumu döner)."""
+    with database.db_session() as conn:
+        disabled = _gemini_disabled_response(conn)
+        if disabled:
+            return disabled
+    return jsonify({"success": True, "job": prediction_batch.start_background()})
+
+@app.route("/api/admin/jobs/predictions/cancel", methods=["POST"])
+def api_prediction_job_cancel():
+    """Toplu analizi, o an analiz edilen maç bittikten sonra durdurur."""
+    return jsonify({"success": True, "job": prediction_batch.cancel()})
 
 @app.route("/api/matches/<int:match_id>/analyze", methods=["POST"])
 def api_analyze_single_match(match_id: int):
     """
     Tekil bir maç için anlık Gemini analizi yapar.
+    Son maçlar / H2H verisi yoksa (veri kaynağından bir kez daha denenir) Gemini'ye gönderilmez: 409 (MISSING_STATS).
     REQUIRE_LEAGUE_APPROVAL açıksa ve ligin Gemini izni kapalıysa 409 (LEAGUE_DISABLED) döner;
     istek gövdesinde {"enable_league": true} gönderilirse önce lig izni açılır, sonra analiz yapılır.
     """
     data = request.get_json(silent=True) or {}
     with database.db_session() as conn:
-        ctx = database.get_match_full_context(conn, match_id)
-        if not ctx:
+        if not database.get_match_full_context(conn, match_id):
             return _match_not_found()
         disabled = _gemini_disabled_response(conn)
         if disabled:
             return disabled
+
+        ctx, missing = match_data.load_context_for_analysis(conn, match_id)
+        if missing:
+            return jsonify({
+                "success": False,
+                "code": "MISSING_STATS",
+                "missing": missing,
+                "error": match_data.missing_stats_message(missing)
+            }), 409
 
         match = ctx["match"]
         if config.REQUIRE_LEAGUE_APPROVAL and match["league_id"] and not match["league_gemini_analysis"]:
@@ -306,10 +384,12 @@ def api_toggle_all_leagues():
 def api_analyze_league_matches(league_id: int):
     """
     Belirtilen ligdeki tüm bitmemiş ve henüz analiz edilmemiş maçları Gemini AI ile analiz eder.
+    Son maçlar / H2H verisi olmayan maçlar Gemini'ye gönderilmez, 'skipped' listesinde raporlanır.
     Ayrıca ligin analiz iznini de otomatik olarak aktif eder.
     """
     analyzed_results = []
     errors = []
+    skipped = []
 
     with database.db_session() as conn:
         disabled = _gemini_disabled_response(conn)
@@ -336,8 +416,11 @@ def api_analyze_league_matches(league_id: int):
                 continue
 
             match_id = m["id"]
-            ctx = database.get_match_full_context(conn, match_id)
+            ctx, missing = match_data.load_context_for_analysis(conn, match_id)
             if not ctx:
+                continue
+            if missing:
+                skipped.append({"code": m["code"], "teams": f"{m['home_team']} vs {m['away_team']}", "missing": missing})
                 continue
 
             try:
@@ -360,6 +443,8 @@ def api_analyze_league_matches(league_id: int):
         "success": True,
         "league_id": league_id,
         "analyzed_count": len(analyzed_results),
+        "skipped_count": len(skipped),
+        "skipped": skipped,
         "results": analyzed_results,
         "errors": errors
     })
@@ -376,6 +461,7 @@ def api_stats():
         "success": True,
         "stats": stats,
         "config": {
+            "data_source": data_source.source_name(),
             "gemini_analysis_enabled": gemini_enabled,
             "require_league_approval": config.REQUIRE_LEAGUE_APPROVAL,
             "model": config.GEMINI_MODEL
@@ -392,6 +478,7 @@ def api_get_settings():
         "success": True,
         "gemini": gemini,
         "readonly": {
+            "data_source": data_source.source_name(),
             "model": config.GEMINI_MODEL,
             "require_league_approval": config.REQUIRE_LEAGUE_APPROVAL,
             "default_league_gemini_analysis": bool(config.DEFAULT_LEAGUE_GEMINI_ANALYSIS),

@@ -25,6 +25,13 @@ async function api(url, options = {}) {
 }
 
 const GEMINI_DISABLED_HINT = 'Gemini analizleri kapalı. Lig Yönetimi › Ayarlar sayfasından açabilirsiniz.';
+const MISSING_STATS_HINT = 'Son maçlar / H2H verisi yok; bu maç Gemini\'ye gönderilmez.';
+
+// Gemini'ye gönderilmesi için gereken istatistikler (sunucudaki match_data.REQUIRED_SECTIONS ile aynı)
+function missingStatSections(ctx) {
+    const required = [['home_last', 'Ev sahibinin son maçları'], ['away_last', 'Deplasmanın son maçları'], ['h2h', 'Aralarındaki maçlar (H2H)']];
+    return required.filter(([key]) => !(Array.isArray(ctx[key]) ? ctx[key].length : ctx[key])).map(([, label]) => label);
+}
 
 function postJson(url, body) {
     return api(url, {
@@ -157,15 +164,30 @@ async function requestPrediction(matchId) {
 }
 
 // ==================== FORMATLAYICILAR ====================
-function pickMainOdds(odds = []) {
+function isBasketball(sportType) {
+    return sportType === 'BASKETBALL';
+}
+
+// Liste görünümündeki ana oranlar. Basketbolda beraberlik (MS 0), 2.5 Gol Üst ve KG yoktur.
+function pickMainOdds(odds = [], sportType = 'FOOTBALL') {
     const find = pred => odds.find(pred)?.odds_value ?? null;
+    const basketball = isBasketball(sportType);
     return {
         ms1: find(o => o.market_name === 'Maç Sonucu' && o.option_name === 'MS 1'),
-        ms0: find(o => o.market_name === 'Maç Sonucu' && o.option_name === 'MS 0'),
+        ms0: basketball ? null : find(o => o.market_name === 'Maç Sonucu' && o.option_name === 'MS 0'),
         ms2: find(o => o.market_name === 'Maç Sonucu' && o.option_name === 'MS 2'),
-        u25: find(o => o.market_name === '2.5 Gol Alt/Üst' && o.option_name.includes('Üst')),
-        kg: find(o => o.market_name === 'Karşılıklı Gol' && o.option_name.includes('VAR'))
+        u25: basketball ? null : find(o => o.market_name === '2.5 Gol Alt/Üst' && o.option_name.includes('Üst')),
+        kg: basketball ? null : find(o => o.market_name === 'Karşılıklı Gol' && o.option_name.includes('VAR'))
     };
+}
+
+// Tahmin özetinin ikinci satırı: futbol 'İY 1 · ALT · KG YOK', basketbol 'İY 1 · Toplam 217'
+function predictionSubline(p, sportType) {
+    if (isBasketball(sportType)) {
+        const total = p.predicted_total_points !== null && p.predicted_total_points !== undefined ? ` · Toplam ${p.predicted_total_points}` : '';
+        return `${p.predicted_ht_result || '—'}${total}`;
+    }
+    return `${p.predicted_ht_result || '—'} · ${p.predicted_over_under_3 || '—'} · ${p.predicted_kg || '—'}`;
 }
 
 function formatOdd(value) {
@@ -209,6 +231,9 @@ function normalizeHistoryItem(item) {
         league: item.league || item.LN || item.LeagueName || '',
         home: item.home || item.HN || teamName(item.HomeTeam) || '',
         away: item.away || item.AN || teamName(item.AwayTeam) || '',
-        score: typeof score === 'string' || typeof score === 'number' ? String(score) : ''
+        score: typeof score === 'string' || typeof score === 'number' ? String(score) : '',
+        htScore: item.ht_score || '',
+        // iddaa.com son maç listelerinde ilgili takımın bakış açısından sonuç (G / B / M)
+        result: ['G', 'B', 'M'].includes(item.result) ? item.result : null
     };
 }

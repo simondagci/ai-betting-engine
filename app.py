@@ -3,9 +3,11 @@ import time
 from typing import List, Dict, Any, Callable, Optional
 import config
 import database
-import nesine_api
+import data_source
 import gemini_engine
+import match_data
 import rules
+import stats_sync
 
 # ANSI Renk Kodları
 class Colors:
@@ -55,8 +57,8 @@ def print_banner():
     print(f"{Colors.CYAN}{'-' * 68}{Colors.ENDC}\n")
 
 def sync_bulletin() -> None:
-    print(f"\n{Colors.YELLOW}🔄 Nesine İddaa Bülteni Çekiliyor...{Colors.ENDC}")
-    events = nesine_api.fetch_bulletin()
+    print(f"\n{Colors.YELLOW}🔄 İddaa Bülteni Çekiliyor ({data_source.source_name()})...{Colors.ENDC}")
+    events = data_source.fetch_bulletin()
     if not events:
         print(f"{Colors.RED}❌ Bültenden maç verisi çekilemedi! İnternet bağlantınızı kontrol edin.{Colors.ENDC}")
         return
@@ -86,6 +88,9 @@ def sync_bulletin() -> None:
     if expired_cnt > 0:
         print(f"   ⏰ Tarihi Geçen/Biten Maç Sayısı: {Colors.BLUE}{expired_cnt}{Colors.ENDC}")
     print(f"   💰 Kaydedilen Yeni Bahis Oranı  : {Colors.CYAN}{sync_res['odds_total']}{Colors.ENDC}")
+
+    # Bülten sonrası: istatistiği olmayan tüm maçların son maçları / H2H / puan durumu çekilir
+    sync_match_stats()
 
 def list_and_search_matches() -> None:
     print(f"\n{Colors.BOLD}🔎 MAÇ LİSTELEME VE ARAMA{Colors.ENDC}")
@@ -173,24 +178,33 @@ def manage_leagues() -> None:
             elif choice == "7":
                 break
 
+def _progress_line(done: int, total: int, started: float, current: str) -> str:
+    width = 30
+    filled = int(width * done / total) if total else width
+    eta = int((time.time() - started) / done * (total - done)) if done else 0
+    return (f"\r   [{'█' * filled}{'-' * (width - filled)}] {done}/{total} "
+            f"(%{done * 100 // total if total else 100}) · kalan ~{eta // 60} dk {eta % 60:02d} sn · {current[:35]:<35}")
+
 def sync_match_stats() -> None:
-    print(f"\n{Colors.YELLOW}📊 Takım İstatistikleri Çekiliyor (H2H, Son Maçlar, Eksikler)...{Colors.ENDC}")
-    with database.db_session() as conn:
-        matches = database.get_pending_matches(conn, limit=20)
-        if not matches:
-            print(f"{Colors.YELLOW}ℹ️ Veritabanında işlenecek maç bulunamadı.{Colors.ENDC}")
-            return
+    """İstatistiği olmayan tüm bitmemiş maçların son maçlarını, H2H'sini ve puan durumunu ilerleme çubuğuyla çeker."""
+    matches = stats_sync.pending_matches()
+    if not matches:
+        print(f"\n{Colors.GREEN}✅ Tüm bitmemiş maçların istatistikleri zaten mevcut.{Colors.ENDC}")
+        return
 
-        print(f"🔎 İlk {len(matches)} maç için istatistik servisleri sorgulanıyor...")
-        for idx, match in enumerate(matches, 1):
-            code = match["code"]
-            print(f"[{idx}/{len(matches)}] KOD: {code} -> {match['home_team']} vs {match['away_team']}...", end=" ")
-            database.save_match_stats(conn, match["id"], **nesine_api.fetch_match_stats(code))
-            conn.commit()
-            print(f"{Colors.GREEN}OK{Colors.ENDC}")
-            time.sleep(0.2)
-
-    print(f"{Colors.GREEN}✅ {len(matches)} maçın istatistik bilgisi işlendi.{Colors.ENDC}")
+    print(f"\n{Colors.YELLOW}📊 {len(matches)} maçın istatistikleri çekiliyor ({data_source.source_name()}). "
+          f"Durdurmak için CTRL+C (çekilen veriler kalır).{Colors.ENDC}")
+    started = time.time()
+    try:
+        counts = stats_sync.run(
+            matches,
+            on_progress=lambda p: print(_progress_line(p["processed"], len(matches), started, p["current"]), end="", flush=True)
+        )
+    except KeyboardInterrupt:
+        print(f"\n{Colors.YELLOW}⏹  Durduruldu. Kalan maçlar bir sonraki çalıştırmada işlenir.{Colors.ENDC}")
+        return
+    print(f"\n{Colors.GREEN}✅ Tamamlandı: {counts['updated']} maçın istatistikleri kaydedildi, "
+          f"{counts['empty']} maç için veri bulunamadı, {counts['errors']} hata.{Colors.ENDC}")
 
 def _find_odds(odds: List[Dict[str, Any]], predicate: Callable[[Dict[str, Any]], bool]) -> Any:
     return next((o['odds_value'] for o in odds if predicate(o)), '-')
@@ -203,15 +217,20 @@ def display_prediction_card(match_info: Dict[str, Any], pred: Dict[str, Any], od
     print(f"Lig / Saat : {match_info.get('league_name')} | {match_info.get('match_date')} {match_info.get('match_time')}")
     print(f"{Colors.GREEN}{'-'*64}{Colors.ENDC}")
 
+    basketball = rules.is_basketball(match_info.get('sport_type'))
+
     # Oran Özeti
     if odds:
         ms1, ms0, ms2 = (
             _find_odds(odds, lambda o, opt=opt: o['market_name'] == 'Maç Sonucu' and o['option_name'] == opt)
             for opt in ('MS 1', 'MS 0', 'MS 2')
         )
-        kg_v = _find_odds(odds, lambda o: o['market_name'] == 'Karşılıklı Gol' and 'VAR' in o['option_name'])
-        u25 = _find_odds(odds, lambda o: '2.5' in o['market_name'] and 'Üst' in o['option_name'])
-        print(f"📌 İddaa Oranları : MS 1: {ms1} | MS 0: {ms0} | MS 2: {ms2} | 2.5 Üst: {u25} | KG Var: {kg_v}")
+        if basketball:
+            print(f"📌 İddaa Oranları : MS 1: {ms1} | MS 2: {ms2}")
+        else:
+            kg_v = _find_odds(odds, lambda o: o['market_name'] == 'Karşılıklı Gol' and 'VAR' in o['option_name'])
+            u25 = _find_odds(odds, lambda o: '2.5' in o['market_name'] and 'Üst' in o['option_name'])
+            print(f"📌 İddaa Oranları : MS 1: {ms1} | MS 0: {ms0} | MS 2: {ms2} | 2.5 Üst: {u25} | KG Var: {kg_v}")
         print(f"{Colors.GREEN}{'-'*64}{Colors.ENDC}")
 
     conf = pred.get('confidence_score', 0)
@@ -219,20 +238,33 @@ def display_prediction_card(match_info: Dict[str, Any], pred: Dict[str, Any], od
 
     print(f"⏱️  İlk Yarı Tahmini     : {Colors.BOLD}{pred.get('predicted_ht_result')}{Colors.ENDC}")
     print(f"🏆 Maç Sonu Tahmini     : {Colors.BOLD}{pred.get('predicted_ft_result')}{Colors.ENDC}")
-    print(f"⚽ 3 Gol Sınırı (Alt/Üst): {Colors.BOLD}{pred.get('predicted_over_under_3')}{Colors.ENDC} {Colors.DIM}(>=4 gol: ÜST, <=3 gol: ALT){Colors.ENDC}")
-    print(f"🤝 Karşılıklı Gol       : {Colors.BOLD}{pred.get('predicted_kg')}{Colors.ENDC}")
+    if basketball:
+        print(f"🏀 Maç Sonu Toplam Sayı : {Colors.BOLD}{pred.get('predicted_total_points')}{Colors.ENDC}")
+    else:
+        print(f"⚽ 3 Gol Sınırı (Alt/Üst): {Colors.BOLD}{pred.get('predicted_over_under_3')}{Colors.ENDC} {Colors.DIM}(>=4 gol: ÜST, <=3 gol: ALT){Colors.ENDC}")
+        print(f"🤝 Karşılıklı Gol       : {Colors.BOLD}{pred.get('predicted_kg')}{Colors.ENDC}")
     print(f"🎯 Tahmini Skor         : {Colors.BOLD}{pred.get('predicted_score')}{Colors.ENDC}")
     print(f"🌟 Güven Skoru          : {conf_color}{Colors.BOLD}%{conf}{Colors.ENDC}")
+    best_bet = pred.get('best_bet')
+    if best_bet:
+        print(f"⭐ En Güçlü Tercih      : {Colors.YELLOW}{Colors.BOLD}{best_bet.get('selection')}{Colors.ENDC} "
+              f"(%{best_bet.get('confidence')}) {Colors.DIM}{best_bet.get('reason') or ''}{Colors.ENDC}")
     print(f"\n📝 {Colors.BOLD}Taktiksel Analiz Özeti:{Colors.ENDC}")
     print(f"   {Colors.CYAN}{pred.get('analysis_summary')}{Colors.ENDC}")
     print(f"{Colors.GREEN}{'='*64}{Colors.ENDC}\n")
 
 def _predict_and_save(match_id: int) -> None:
-    """Maç bağlamını yükler, Gemini tahmini üretir, kaydeder ve tahmin kartını gösterir."""
+    """
+    Maç bağlamını yükler, Gemini tahmini üretir, kaydeder ve tahmin kartını gösterir.
+    Son maçlar / H2H verisi yoksa maç Gemini'ye gönderilmez.
+    """
     with database.db_session() as conn:
-        context = database.get_match_full_context(conn, match_id)
+        context, missing = match_data.load_context_for_analysis(conn, match_id)
     if not context:
         print(f"{Colors.RED}❌ Maç bağlamı oluşturulamadı.{Colors.ENDC}")
+        return
+    if missing:
+        print(f"{Colors.YELLOW}⏭  {match_data.missing_stats_message(missing)}{Colors.ENDC}")
         return
 
     prediction = gemini_engine.generate_prediction(context, model_name=config.GEMINI_MODEL)
@@ -327,8 +359,12 @@ def generate_smart_coupon() -> None:
     for idx, p in enumerate(high_conf, 1):
         print(f"\n{Colors.BOLD}Maç {idx}: [{p['code']}] {p['home_team']} vs {p['away_team']}{Colors.ENDC}")
         print(f"Lig: {p['league_name']} | Tarih: {p['match_date']} {p['match_time']}")
-        print(f"🎯 Önerilen Tercih : {Colors.GREEN}{p['predicted_ft_result']}{Colors.ENDC} veya {Colors.CYAN}{p['predicted_over_under_3']} (3 Gol Sınırı){Colors.ENDC}")
-        print(f"🤝 KG Tercihi       : {p['predicted_kg']}")
+        if rules.is_basketball(p.get('sport_type')):
+            print(f"🎯 Önerilen Tercih : {Colors.GREEN}{p['predicted_ft_result']}{Colors.ENDC}")
+            print(f"🏀 Toplam Sayı      : {p['predicted_total_points']}")
+        else:
+            print(f"🎯 Önerilen Tercih : {Colors.GREEN}{p['predicted_ft_result']}{Colors.ENDC} veya {Colors.CYAN}{p['predicted_over_under_3']} (3 Gol Sınırı){Colors.ENDC}")
+            print(f"🤝 KG Tercihi       : {p['predicted_kg']}")
         print(f"🎯 Beklenen Skor    : {p['predicted_score']}")
         print(f"🌟 Güven Skoru      : {Colors.BOLD}%{p['confidence_score']}{Colors.ENDC}")
         print(f"💡 Neden?           : {Colors.DIM}{(p['ai_analysis_summary'] or '')[:150]}...{Colors.ENDC}")
@@ -365,24 +401,31 @@ def enter_match_result() -> None:
             print(f"{Colors.RED}❌ {code} kodlu maç veritabanında bulunamadı!{Colors.ENDC}")
             return
 
+        basketball = rules.is_basketball(match_row["sport_type"])
+        unit = "Sayı" if basketball else "Gol"
         print(f"👉 Karşılaşma: {match_row['home_team']} vs {match_row['away_team']}")
         try:
-            ht_home = int(input("İlk Yarı Ev Sahibi Gol Sayısı (HT Home): ").strip())
-            ht_away = int(input("İlk Yarı Deplasman Gol Sayısı (HT Away): ").strip())
-            ft_home = int(input("Maç Sonu Ev Sahibi Gol Sayısı (FT Home): ").strip())
-            ft_away = int(input("Maç Sonu Deplasman Gol Sayısı (FT Away): ").strip())
+            ht_home = int(input(f"İlk Yarı Ev Sahibi {unit} (HT Home): ").strip())
+            ht_away = int(input(f"İlk Yarı Deplasman {unit} (HT Away): ").strip())
+            ft_home = int(input(f"Maç Sonu Ev Sahibi {unit}{' (uzatmalar dahil)' if basketball else ''} (FT Home): ").strip())
+            ft_away = int(input(f"Maç Sonu Deplasman {unit}{' (uzatmalar dahil)' if basketball else ''} (FT Away): ").strip())
+            if min(ht_home, ht_away, ft_home, ft_away) < 0:
+                raise ValueError
         except ValueError:
             print(f"{Colors.RED}❌ Lütfen geçerli tam sayı skorlar girin.{Colors.ENDC}")
             return
 
         database.save_result(conn, match_row["id"], ht_home, ht_away, ft_home, ft_away)
 
-    ou_status = "ÜST (>= 4 Gol)" if rules.is_over_3_goals(ft_home, ft_away) else "ALT (<= 3 Gol)"
     print(f"\n{Colors.GREEN}✅ Maç Sonucu Başarıyla Kaydedildi!{Colors.ENDC}")
     print(f"   • İlk Yarı Skoru : {ht_home} - {ht_away}")
     print(f"   • Maç Sonu Skoru : {ft_home} - {ft_away}")
-    print(f"   • 3 Gol Durumu   : {ou_status}")
-    print(f"   • KG Durumu      : {rules.kg_label(ft_home, ft_away)}")
+    if basketball:
+        print(f"   • Toplam Sayı    : {ft_home + ft_away}")
+    else:
+        ou_status = "ÜST (>= 4 Gol)" if rules.is_over_3_goals(ft_home, ft_away) else "ALT (<= 3 Gol)"
+        print(f"   • 3 Gol Durumu   : {ou_status}")
+        print(f"   • KG Durumu      : {rules.kg_label(ft_home, ft_away)}")
 
 def display_accuracy_report() -> None:
     print(f"\n{Colors.BOLD}📈 YAPAY ZEKA BAŞARI VE DOĞRULUK PERFORMANS RAPORU{Colors.ENDC}")
@@ -403,16 +446,22 @@ def display_accuracy_report() -> None:
         filled = int(acc // 5)
         return f"[{'█' * filled}{'-' * (20 - filled)}]"
 
+    # Her metrik kendi değerlendirilen maç sayısıyla gösterilir (Alt/Üst ve KG sadece futbolda)
     rows = [
-        ("⏱️  İlk Yarı (İY) Doğruluğu   ", "ht_accuracy", "ht_correct"),
-        ("🏆 Maç Sonu (MS) Doğruluğu    ", "ft_accuracy", "ft_correct"),
-        ("⚽ 3 Gol Alt/Üst Doğruluğu    ", "over_under_3_accuracy", "ou_correct"),
-        ("🤝 Karşılıklı Gol Doğruluğu   ", "kg_accuracy", "kg_correct"),
-        ("🎯 Tam Skor İsabeti           ", "score_accuracy", "score_correct"),
+        ("⏱️  İlk Yarı (İY) Doğruluğu   ", "ht_accuracy", "ht_correct", "ht_total"),
+        ("🏆 Maç Sonu (MS) Doğruluğu    ", "ft_accuracy", "ft_correct", "ft_total"),
+        ("⚽ 3 Gol Alt/Üst Doğruluğu    ", "over_under_3_accuracy", "ou_correct", "ou_total"),
+        ("🤝 Karşılıklı Gol Doğruluğu   ", "kg_accuracy", "kg_correct", "kg_total"),
+        ("🎯 Tam Skor İsabeti           ", "score_accuracy", "score_correct", "score_total"),
+        ("⭐ En Güçlü Tercih İsabeti    ", "best_bet_accuracy", "best_bet_correct", "best_bet_total"),
     ]
-    for label, acc_key, correct_key in rows:
+    for label, acc_key, correct_key, total_key in rows:
+        if not metrics[total_key]:
+            continue
         acc = metrics[acc_key]
-        print(f"{label}: %{acc:<5} {bar(acc)} ({metrics[correct_key]}/{total})")
+        print(f"{label}: %{acc:<5} {bar(acc)} ({metrics[correct_key]}/{metrics[total_key]})")
+    if metrics.get("total_points_evaluated"):
+        print(f"🏀 Basketbol Toplam Sayı      : ortalama {metrics['total_points_avg_diff']} sayı sapma ({metrics['total_points_evaluated']} maç)")
     print(f"{Colors.CYAN}{'-'*64}{Colors.ENDC}")
 
     overall = metrics["overall_accuracy"]
