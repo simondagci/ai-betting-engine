@@ -310,6 +310,34 @@ def init_db(db_path: str = DB_FILE) -> None:
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
+
+        # Kaydedilen (oynanan) kuponlar ve kupondaki tercihler. Tuttu / yattı durumu saklanmaz,
+        # okunurken maç sonuçlarından hesaplanır (get_coupons): skor girilince kupon kendiliğinden değerlendirilir.
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS coupons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT,
+            total_odds REAL NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS coupon_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            coupon_id INTEGER NOT NULL,
+            match_id INTEGER NOT NULL,
+            pick TEXT,
+            market TEXT NOT NULL,
+            selection TEXT NOT NULL,
+            odds REAL NOT NULL,
+            confidence INTEGER,
+            FOREIGN KEY (coupon_id) REFERENCES coupons (id) ON DELETE CASCADE,
+            FOREIGN KEY (match_id) REFERENCES matches (id)
+        );
+        """)
+
+        # Kaldırılan lig başarı önbelleği: lig isabeti her istekte sonuçlardan hesaplanır (bayatlamaz)
+        cursor.execute("DROP TABLE IF EXISTS league_accuracy_cache")
         conn.commit()
 
         # Tarihi geçmiş maçları topluca güncelle
@@ -336,6 +364,8 @@ def update_expired_matches(conn: sqlite3.Connection) -> int:
 # ==============================================================================
 
 SETTING_GEMINI_ENABLED = "gemini_analysis_enabled"
+SETTING_MIN_MATCH_ODDS = "min_match_odds"
+SETTING_MIN_COUPON_ODDS = "min_coupon_odds"
 
 def get_setting(conn: sqlite3.Connection, key: str) -> Optional[sqlite3.Row]:
     return conn.execute("SELECT value, updated_at FROM settings WHERE key = ?", (key,)).fetchone()
@@ -369,6 +399,31 @@ def is_gemini_enabled(conn: sqlite3.Connection) -> bool:
 def set_gemini_enabled(conn: sqlite3.Connection, enabled: Optional[bool]) -> None:
     """True/False panel değerini kaydeder; None .env varsayılanına döndürür."""
     set_setting(conn, SETTING_GEMINI_ENABLED, None if enabled is None else ("1" if enabled else "0"))
+
+# Kupon oran ayarlarının alabileceği en düşük değer (1.00 oran kazanç getirmez)
+MIN_ODDS_FLOOR = 1.01
+
+def get_coupon_odds_settings(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """
+    Kupon motorunun oran kuralları: maç başına minimum oran ve minimum toplam kupon oranı.
+    Her biri için panelden kaydedilen değer (settings) varsa o, yoksa .env (MIN_MATCH_ODDS / MIN_COUPON_TOTAL_ODDS) kullanılır.
+    """
+    env_defaults = {"min_match_odds": config.MIN_MATCH_ODDS, "min_coupon_odds": config.MIN_COUPON_TOTAL_ODDS}
+    rows = {name: get_setting(conn, key) for name, key in (("min_match_odds", SETTING_MIN_MATCH_ODDS),
+                                                            ("min_coupon_odds", SETTING_MIN_COUPON_ODDS))}
+    updated = [r["updated_at"] for r in rows.values() if r]
+    return {
+        **{name: float(row["value"]) if row else env_defaults[name] for name, row in rows.items()},
+        "source": "panel" if updated else "env",
+        "env_defaults": env_defaults,
+        "updated_at": max(updated) if updated else None,
+    }
+
+def set_coupon_odds_settings(conn: sqlite3.Connection, min_match_odds: Optional[float],
+                             min_coupon_odds: Optional[float]) -> None:
+    """Kupon oran kurallarını kaydeder (MIN_ODDS_FLOOR altı değerler yükseltilir); None .env varsayılanına döndürür."""
+    for key, value in ((SETTING_MIN_MATCH_ODDS, min_match_odds), (SETTING_MIN_COUPON_ODDS, min_coupon_odds)):
+        set_setting(conn, key, None if value is None else str(round(max(value, MIN_ODDS_FLOOR), 2)))
 
 # ==============================================================================
 # TAKIM / LİG
@@ -797,13 +852,24 @@ def _get_odds_by_match(conn: sqlite3.Connection, match_ids: List[int]) -> Dict[i
         })
     return odds_by_match
 
+def get_played_match_ids(conn: sqlite3.Connection, match_ids: List[int]) -> set:
+    """Verilen maçlardan kayıtlı (oynanan) bir kuponda yer alanlar."""
+    if not match_ids:
+        return set()
+    placeholders = ",".join("?" * len(match_ids))
+    return {r[0] for r in conn.execute(
+        f"SELECT DISTINCT match_id FROM coupon_items WHERE match_id IN ({placeholders})", match_ids)}
+
 def _enrich_matches(conn: sqlite3.Connection, rows: List[sqlite3.Row]) -> List[Dict[str, Any]]:
-    """Maç satırlarını sözlüğe çevirir; oranları ve yerel saat alanlarını ekler."""
+    """Maç satırlarını sözlüğe çevirir; oranları, yerel saat alanlarını ve oynanan kuponda olup olmadığını (played) ekler."""
     matches = [dict(row) for row in rows]
-    odds_by_match = _get_odds_by_match(conn, [m["id"] for m in matches])
+    match_ids = [m["id"] for m in matches]
+    odds_by_match = _get_odds_by_match(conn, match_ids)
+    played = get_played_match_ids(conn, match_ids)
     for m in matches:
         add_local_time_fields(m)
         m["odds"] = odds_by_match.get(m["id"], [])
+        m["played"] = m["id"] in played
         # Eski tahminlerde ⭐ oranı kayıtlı değil: bülten oranından tamamlanır
         if m.get("best_bet_selection") and not m.get("best_bet_odds"):
             m["best_bet_odds"] = rules.selection_odds(m["odds"], m.get("best_bet_market"), m["best_bet_selection"])
@@ -901,6 +967,94 @@ def get_unfinished_matches(conn: sqlite3.Connection, limit: int = 250) -> List[D
         LIMIT ?
     """, (limit,)).fetchall()
     return _enrich_matches(conn, rows)
+
+def get_coupon_candidates(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Kupon motoru için analiz edilmiş ve henüz BAŞLAMAMIŞ maçlar (en son tahmin ve oranlarıyla)."""
+    rows = conn.execute(f"""
+        SELECT {_MATCH_COLUMNS}, {_PREDICTION_COLUMNS}
+        {_MATCH_JOINS}
+        {_LATEST_PREDICTION_JOIN}
+        WHERE m.match_completed = 0 AND p.id IS NOT NULL
+        ORDER BY {_CHRONOLOGICAL_DATE} ASC, m.match_time ASC
+    """).fetchall()
+    now = datetime.now(ZoneInfo(config.SOURCE_TIMEZONE))
+    src_tz = ZoneInfo(config.SOURCE_TIMEZONE)
+    not_started = []
+    for row in rows:
+        start = _parse_match_datetime(row["match_date"], row["match_time"])
+        if start and start.replace(tzinfo=src_tz) > now:
+            not_started.append(row)
+    return _enrich_matches(conn, not_started)
+
+# ==============================================================================
+# KUPONLAR
+# ==============================================================================
+
+def save_coupon(conn: sqlite3.Connection, strategy: Optional[str], items: List[Dict[str, Any]]) -> int:
+    """
+    Oynanan kuponu kaydeder. items: [{"match_id", "pick", "market", "selection", "odds", "confidence"}].
+    Toplam oran tercih oranlarının çarpımıdır.
+    """
+    total_odds = 1.0
+    for item in items:
+        total_odds *= item["odds"]
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO coupons (strategy, total_odds) VALUES (?, ?)", (strategy, round(total_odds, 2)))
+    coupon_id = cursor.lastrowid
+    cursor.executemany("""
+        INSERT INTO coupon_items (coupon_id, match_id, pick, market, selection, odds, confidence)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, [(coupon_id, i["match_id"], i.get("pick"), i["market"], i["selection"], i["odds"], i.get("confidence")) for i in items])
+    return coupon_id
+
+def delete_coupon(conn: sqlite3.Connection, coupon_id: int) -> bool:
+    conn.execute("DELETE FROM coupon_items WHERE coupon_id = ?", (coupon_id,))
+    return conn.execute("DELETE FROM coupons WHERE id = ?", (coupon_id,)).rowcount > 0
+
+def coupon_status(item_results: List[Optional[bool]]) -> str:
+    """Bir tercih yattıysa 'lost', hepsi tuttuysa 'won', aksi halde (sonucu bekleyen var) 'pending'."""
+    if any(r is False for r in item_results):
+        return "lost"
+    return "won" if all(r is True for r in item_results) else "pending"
+
+def get_coupons(conn: sqlite3.Connection, limit: int = 100) -> Dict[str, Any]:
+    """
+    Kaydedilen kuponlar (en yeni önce), her tercih maç sonucuna göre değerlendirilmiş olarak:
+    {"coupons": [{..., "status", "items": [{..., "result": True/False/None, "score"}]}], "summary": {...}}
+    """
+    coupons = [dict(r) for r in conn.execute(
+        "SELECT id, strategy, total_odds, created_at FROM coupons ORDER BY id DESC LIMIT ?", (limit,))]
+    items_by_coupon: Dict[int, List[Dict[str, Any]]] = {c["id"]: [] for c in coupons}
+    if coupons:
+        placeholders = ",".join("?" * len(coupons))
+        rows = conn.execute(f"""
+            SELECT ci.coupon_id, ci.match_id, ci.pick, ci.market, ci.selection, ci.odds, ci.confidence,
+                   m.code, m.match_date, m.match_time, m.sport_type, ht.name AS home_team, at.name AS away_team,
+                   l.name AS league_name, r.ht_home_score, r.ht_away_score, r.ft_home_score, r.ft_away_score
+            FROM coupon_items ci
+            JOIN matches m ON m.id = ci.match_id
+            JOIN teams ht ON m.home_team_id = ht.id
+            JOIN teams at ON m.away_team_id = at.id
+            LEFT JOIN leagues l ON m.league_id = l.id
+            LEFT JOIN results r ON r.match_id = m.id
+            WHERE ci.coupon_id IN ({placeholders})
+            ORDER BY ci.id
+        """, [c["id"] for c in coupons]).fetchall()
+        for row in rows:
+            item = add_local_time_fields(dict(row))
+            item["result"] = rules.selection_won(item["market"], item["selection"], item)
+            item["score"] = (f"{item['ft_home_score']}-{item['ft_away_score']}"
+                             if item["ft_home_score"] is not None else None)
+            items_by_coupon[item["coupon_id"]].append(item)
+
+    summary = {"total": len(coupons), "won": 0, "lost": 0, "pending": 0}
+    for c in coupons:
+        c["items"] = items_by_coupon[c["id"]]
+        c["status"] = coupon_status([i["result"] for i in c["items"]])
+        summary[c["status"]] += 1
+    settled = summary["won"] + summary["lost"]
+    summary["win_rate"] = round(summary["won"] / settled * 100, 1) if settled else None
+    return {"coupons": coupons, "summary": summary}
 
 def get_completed_matches(
     conn: sqlite3.Connection,

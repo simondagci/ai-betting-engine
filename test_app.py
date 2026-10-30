@@ -17,6 +17,7 @@ import iddaa_api
 import stats_sync
 import prediction_batch
 import results_sync
+import coupon
 import gemini_engine
 import rules
 
@@ -692,6 +693,38 @@ class TestWebServer(unittest.TestCase):
         # .env varsayılanına dönüş
         res = self.client.post("/api/admin/settings/gemini", json={"enabled": None}).get_json()
         self.assertEqual((res["gemini"]["enabled"], res["gemini"]["source"]), (config.ENABLE_GEMINI_ANALYSIS, "env"))
+
+    def test_coupon_odds_settings_flow(self):
+        # 1. Başlangıçta .env varsayılanları
+        settings = self.client.get("/api/admin/settings").get_json()
+        self.assertIn("coupon_odds", settings)
+        self.assertEqual(settings["coupon_odds"]["min_match_odds"], config.MIN_MATCH_ODDS)
+        self.assertEqual(settings["coupon_odds"]["min_coupon_odds"], config.MIN_COUPON_TOTAL_ODDS)
+        self.assertEqual(settings["coupon_odds"]["source"], "env")
+
+        # 2. Panelden güncelleme (1.20 ve 1.80 gibi daha düşük değerler de dahil)
+        res = self.client.post("/api/admin/settings/coupon_odds", json={
+            "min_match_odds": 1.20,
+            "min_coupon_odds": 1.80
+        }).get_json()
+        self.assertTrue(res["success"])
+        self.assertEqual(res["coupon_odds"]["min_match_odds"], 1.20)
+        self.assertEqual(res["coupon_odds"]["min_coupon_odds"], 1.80)
+        self.assertEqual(res["coupon_odds"]["source"], "panel")
+
+        # GET ile kontrol
+        check = self.client.get("/api/admin/settings").get_json()["coupon_odds"]
+        self.assertEqual(check["min_match_odds"], 1.20)
+        self.assertEqual(check["min_coupon_odds"], 1.80)
+        self.assertEqual(check["source"], "panel")
+
+        # 3. .env varsayılanına sıfırlama (null)
+        reset_res = self.client.post("/api/admin/settings/coupon_odds", json={"min_match_odds": None, "min_coupon_odds": None}).get_json()
+        self.assertTrue(reset_res["success"])
+        self.assertEqual(reset_res["coupon_odds"]["source"], "env")
+        self.assertEqual(reset_res["coupon_odds"]["min_match_odds"], config.MIN_MATCH_ODDS)
+        self.assertEqual(reset_res["coupon_odds"]["min_coupon_odds"], config.MIN_COUPON_TOTAL_ODDS)
+        self.assertEqual(self.client.post("/api/admin/settings/coupon_odds", json={"min_match_odds": "abc"}).status_code, 400)
 
     def test_missing_stats_not_sent_to_gemini(self):
         with database.db_session(TEST_DB) as conn:
@@ -1382,6 +1415,146 @@ class TestSourceSwitchAndSync(unittest.TestCase):
         job = results_sync.get_status()
         # İlk maç sürerken iptal edildi: kalan 2 maç işlenmez
         self.assertEqual((job["status"], job["processed"]), ("cancelled", 1))
+
+    def test_coupon_generator_and_league_weighting(self):
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        started_at = datetime.now(ZoneInfo(config.SOURCE_TIMEZONE)) - timedelta(minutes=10)
+
+        def bet(selection, odds, confidence, market="ft"):
+            return {"market": market, "selection": selection, "odds": odds, "confidence": confidence, "reason": "r"}
+
+        def predict(conn, code, league, best, alt=None, date="01.01.2099", time="20:00"):
+            mid = database.save_match(conn, code, f"{code} Ev", f"{code} Dep", league, date, time)
+            database.save_prediction(conn, mid, {"predicted_ft_result": "MS 1", "predicted_score": "2-0", "confidence_score": 70,
+                                                 "best_bet": best, "alt_bet": alt})
+            return mid
+
+        with database.db_session(TEST_DB) as conn:
+            # Geçmiş: 'Başarılı' ligde ⭐ 3/3, 'Başarısız' ligde 1/3 tuttu
+            for i in range(3):
+                database.save_result(conn, predict(conn, f"PA{i}", "Başarılı", bet("MS 1", 1.5, 70), date="01.01.2020"), 1, 0, 2, 0)
+                database.save_result(conn, predict(conn, f"PB{i}", "Başarısız", bet("MS 1", 1.5, 70), date="01.01.2020"),
+                                     0, 0, 2 if i == 0 else 0, 1)
+            predict(conn, "FUT_A", "Başarılı", bet("MS 1", 1.50, 80))
+            predict(conn, "FUT_B", "Başarısız", bet("MS 1", 1.50, 82))
+            # ⭐ oranı düşük (1.10) -> 2. tercih (KG VAR 1.70) kullanılır
+            predict(conn, "FUT_ALT", "Üçüncü Lig", bet("MS 1", 1.10, 95), bet("KG VAR", 1.70, 60, "kg"))
+            # ⭐ düşük ve 2. tercih yok -> kupona girmez
+            predict(conn, "FUT_LOW", "Üçüncü Lig", bet("MS 1", 1.20, 98))
+            # Analiz edilmemiş ve başlamış maçlar kupona girmez
+            database.save_match(conn, "FUT_NO_PRED", "C1", "C2", "Başarılı", "01.01.2099", "20:00")
+            predict(conn, "STARTED", "Başarılı", bet("MS 1", 1.60, 90),
+                    date=started_at.strftime("%d.%m.%Y"), time=started_at.strftime("%H:%M"))
+
+        # .env / config varsayılanı: maç >= 1.30, kupon >= 2.00 (kullanıcının .env değerinden bağımsız)
+        with mock.patch.multiple(config, MIN_MATCH_ODDS=1.30, MIN_COUPON_TOTAL_ODDS=2.00):
+            slip = coupon.generate_coupon(match_count=3, today_only=False, strategy="banko", db_path=TEST_DB)
+        self.assertTrue(slip["success"], slip.get("message"))
+        by_code = {m["code"]: m for m in slip["matches"]}
+        self.assertEqual(set(by_code), {"FUT_A", "FUT_B", "FUT_ALT"})
+        self.assertEqual((by_code["FUT_ALT"]["pick"], by_code["FUT_ALT"]["selection"], by_code["FUT_ALT"]["odds"]), ("alt_bet", "KG VAR", 1.70))
+        self.assertEqual(slip["total_odds"], round(1.5 * 1.5 * 1.7, 2))
+        # Lig isabeti ağırlığı: güveni daha düşük olsa da başarılı ligdeki maç daha yüksek puan alır
+        self.assertGreater(by_code["FUT_A"]["coupon_score"], by_code["FUT_B"]["coupon_score"])
+        self.assertIn("Yüksek lig başarısı", by_code["FUT_A"]["league_note"])
+        self.assertIn("Düşük lig başarısı", by_code["FUT_B"]["league_note"])
+
+        # Kurallar Ayarlar'dan dinamik okunur: min maç oranı 1.60 -> sadece 2. tercihli maç kalır
+        self.client.post("/api/admin/settings/coupon_odds", json={"min_match_odds": 1.60, "min_coupon_odds": 1.50})
+        res = self.client.post("/api/coupon/generate", json={"match_count": 1, "today_only": False}).get_json()
+        self.assertEqual(([m["code"] for m in res["matches"]], res["odds_rules"]["min_match_odds"]), (["FUT_ALT"], 1.60))
+        # Min kupon oranı 2.00 -> 1.70'lik tek maçlı kupon kurulamaz; istek kuralları ezemez
+        self.client.post("/api/admin/settings/coupon_odds", json={"min_match_odds": 1.60, "min_coupon_odds": 2.00})
+        res = self.client.post("/api/coupon/generate", json={"match_count": 1, "today_only": False, "min_total_odds": 1.01}).get_json()
+        self.assertFalse(res["success"])
+        self.assertIn("2.00", res["message"])
+        self.assertEqual(self.client.post("/api/coupon/generate", json={"match_count": "x"}).status_code, 400)
+
+    def test_select_combination_respects_min_total_and_league_limit(self):
+        def item(code, league, odds, score):
+            return {"match": {"code": code, "league_id": league}, "pick": {"odds": odds}, "score": score}
+        scored = [item("a", 1, 1.3, 90), item("b", 1, 1.3, 85), item("c", 1, 1.4, 80), item("d", 2, 1.6, 50)]
+        codes = lambda combo: [c["match"]["code"] for c in combo]
+        # a+b (1.69) ve a+c (1.82) toplam 2.00'ın altında: puanı en yüksek geçerli ikili a+d (2.08)
+        self.assertEqual(codes(coupon.select_combination(scored, 2, 2.0)), ["a", "d"])
+        # 3 maçta lig sınırı (2) korunur: a, b, d
+        self.assertEqual(codes(coupon.select_combination(scored, 3, 2.0)), ["a", "b", "d"])
+        self.assertIsNone(coupon.select_combination(scored, 2, 5.0))
+
+    def test_played_coupon_saved_and_evaluated_from_results(self):
+        def bet(selection, odds, market):
+            return {"market": market, "selection": selection, "odds": odds, "confidence": 70, "reason": "r"}
+        with database.db_session(TEST_DB) as conn:
+            m1 = database.save_match(conn, "K1", "A", "B", "Lig", "01.01.2099", "20:00")
+            database.save_prediction(conn, m1, {"predicted_score": "2-0", "best_bet": bet("MS 1", 1.50, "ft")})
+            m2 = database.save_match(conn, "K2", "C", "D", "Lig", "01.01.2099", "21:00")
+            database.save_prediction(conn, m2, {"predicted_score": "1-1", "best_bet": bet("MS 0", 1.10, "ft"),
+                                                "alt_bet": bet("KG VAR", 1.80, "kg")})
+
+        # Oran / tercih istemciden alınmaz: maçın kayıtlı tahmininden okunur
+        res = self.client.post("/api/coupons", json={"strategy": "banko", "matches": [
+            {"id": m1, "pick": "best_bet", "odds": 99}, {"id": m2, "pick": "alt_bet"}]}).get_json()
+        self.assertTrue(res["success"])
+        data = self.client.get("/api/coupons").get_json()
+        saved = data["coupons"][0]
+        self.assertEqual((saved["status"], saved["total_odds"]), ("pending", 2.7))
+        self.assertEqual([(i["selection"], i["odds"]) for i in saved["items"]], [("MS 1", 1.5), ("KG VAR", 1.8)])
+        self.assertEqual(data["summary"], {"total": 1, "won": 0, "lost": 0, "pending": 1, "win_rate": None})
+
+        # Skorlar gelince otomatik değerlendirilir: biri tuttu -> hâlâ bekliyor; ikisi de tuttu -> tuttu
+        with database.db_session(TEST_DB) as conn:
+            database.save_result(conn, m1, 1, 0, 2, 0)
+        self.assertEqual(self.client.get("/api/coupons").get_json()["coupons"][0]["status"], "pending")
+        with database.db_session(TEST_DB) as conn:
+            database.save_result(conn, m2, 0, 0, 1, 1)
+        data = self.client.get("/api/coupons").get_json()
+        self.assertEqual(data["coupons"][0]["status"], "won")
+        self.assertEqual([i["result"] for i in data["coupons"][0]["items"]], [True, True])
+        self.assertEqual(data["summary"]["win_rate"], 100.0)
+        # Skor düzeltilip tercih yatarsa kupon da yatar
+        with database.db_session(TEST_DB) as conn:
+            database.save_result(conn, m2, 0, 0, 1, 0)
+        self.assertEqual(self.client.get("/api/coupons").get_json()["coupons"][0]["status"], "lost")
+
+        # Geçersiz istekler
+        for body in ({"matches": []}, {"matches": [{"id": m1, "pick": "x"}]},
+                     {"matches": [{"id": m1, "pick": "alt_bet"}]}, {"matches": [{"id": m1, "pick": "best_bet"}] * 2}):
+            self.assertEqual(self.client.post("/api/coupons", json=body).status_code, 400, body)
+
+        coupon_id = saved["id"]
+        self.assertTrue(self.client.delete(f"/api/coupons/{coupon_id}").get_json()["success"])
+        self.assertEqual(self.client.delete(f"/api/coupons/{coupon_id}").status_code, 404)
+        self.assertEqual(self.client.get("/api/coupons").get_json()["coupons"], [])
+
+    def test_exclude_played_matches_from_new_coupons(self):
+        with database.db_session(TEST_DB) as conn:
+            ids = []
+            for code in ("P1", "P2", "P3"):
+                mid = database.save_match(conn, code, f"{code} Ev", f"{code} Dep", f"Lig {code}", "01.01.2099", "20:00")
+                database.save_prediction(conn, mid, {"predicted_score": "1-0", "best_bet": {
+                    "market": "ft", "selection": "MS 1", "odds": 1.50, "confidence": 70, "reason": "r"}})
+                ids.append(mid)
+        self.client.post("/api/coupons", json={"strategy": "banko", "matches": [{"id": ids[0], "pick": "best_bet"}]})
+
+        def generate(exclude):
+            with mock.patch.multiple(config, MIN_MATCH_ODDS=1.30, MIN_COUPON_TOTAL_ODDS=1.10):
+                return self.client.post("/api/coupon/generate", json={"match_count": 3, "today_only": False,
+                                                                      "exclude_played": exclude}).get_json()
+        # İşaret: oynanan maç listede ve kupon önerisinde 'played'
+        played = {m["code"]: m["played"] for m in self.client.get("/api/matches/unfinished").get_json()["matches"]}
+        self.assertEqual(played, {"P1": True, "P2": False, "P3": False})
+        included = generate(False)
+        self.assertTrue(included["success"])
+        self.assertEqual({m["code"]: m["played"] for m in included["matches"]}, {"P1": True, "P2": False, "P3": False})
+        # Seçenek açıkken oynanan maç gelmez: 3 maçlık kupon için 2 uygun maç kalır
+        excluded = generate(True)
+        self.assertFalse(excluded["success"])
+        self.assertIn("(2/3)", excluded["message"])
+        # Kupon silinince işaret de kalkar
+        coupon_id = self.client.get("/api/coupons").get_json()["coupons"][0]["id"]
+        self.client.delete(f"/api/coupons/{coupon_id}")
+        self.assertTrue(generate(True)["success"])
 
 if __name__ == "__main__":
     unittest.main()

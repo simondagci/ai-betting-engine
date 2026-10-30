@@ -33,6 +33,7 @@ python3 -m unittest test_app -v
 | `background_job.py` | Genel arka plan iş altyapısı `BackgroundJob`: aynı anda tek iş, paralel worker'lar (ortak kuyruk), ilerleme / kalan süre, iptal, art arda hata sınırı, `StopJob` |
 | `stats_sync.py` | Toplu istatistik işi (bülten sonrası otomatik başlar). Web'de arka plan thread'i, terminalde ilerleme çubuğu. Yarıda kalırsa kalan maçlar sonraki çalıştırmada işlenir |
 | `results_sync.py` | Toplu maç sonuçları işi: tamamlanmış ama skoru olmayan maçların skorlarını arka planda çeker (`/api/admin/jobs/results`). Skoru olan maçlar atlanır ve tekrar güncellenmez |
+| `coupon.py` | **Kupon motoru:** analiz edilmiş, henüz başlamamış maçlardan strateji (banko / value / surprise) ve lig isabeti ağırlığıyla kupon üretir (`/api/coupon/generate`). Oran kuralları **sabit değil**: her üretimde `database.get_coupon_odds_settings` ile Ayarlar'dan (yoksa `.env` `MIN_MATCH_ODDS` / `MIN_COUPON_TOTAL_ODDS`) okunur. Maç tercihi ⭐, oranı eşiğin altındaysa 2. tercih. "Oynadım, Kaydet" ile kupon `coupons` / `coupon_items`'a yazılır (`save_played_coupon`: tercih ve oran istemciden değil maçın son tahmininden alınır) |
 | `prediction_batch.py` | "🔮 Maçları Analiz Et": bitmemiş, analiz edilmemiş, istatistikleri dolu, ligi izinli maçları `GEMINI_PARALLEL_REQUESTS` paralel istekle Gemini'ye gönderir. Gemini kapatılırsa (`StopJob`) veya art arda 5 hata olursa durur |
 | `data_source.py` | Aktif veri kaynağı seçimi (`DATA_SOURCE=iddaa\|nesine`). `app.py` / `web_server.py` kaynak modüllerini **doğrudan değil bunun üzerinden** çağırır |
 | `iddaa_api.py` | iddaa.com bülten / istatistik / sonuç çağrıları; veriyi Nesine bülten formatına ve uygulama istatistik formatına dönüştürür |
@@ -95,6 +96,15 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
   - İkisi de tahminden farklı olabilir; değerlendirme `rules.selection_won` ile **seçimin kendisine** göre yapılır
     (`evaluation["best_bet"]`, `evaluation["alt_bet"]`). Oranlar `best_bet_odds` / `alt_bet_odds`'a yazılır.
     Lig Yönetimi'nde ⭐ İsabet ve 2. Tercih İsabet ayrı sütunlardır; listede "2. Tercih" ve "2. Tercih %" sütunları vardır.
+- **Kupon oran kuralları dinamiktir:** maç başına min oran (`MIN_MATCH_ODDS`) ve min toplam kupon oranı (`MIN_COUPON_TOTAL_ODDS`)
+  `settings` tablosundan (Lig Yönetimi › Ayarlar), yoksa `.env`'den okunur: `database.get_coupon_odds_settings`. Kodda veya arayüzde
+  1.30 / 2.00 gibi değerleri **sabit yazma**; kupon isteği bu kuralları parametreyle ezemez. Maç tercihi ⭐, oranı eşiğin altındaysa
+  2. tercih; ikisi de altındaysa maç kupona girmez. Başlamış maçlar kupona girmez. Lig isabeti önbelleğe alınmaz.
+- **Oynanan kuponlar:** "💾 Oynadım, Kaydet" kuponu `coupons` + `coupon_items` tablolarına yazar. Tuttu / yattı durumu **saklanmaz**;
+  `database.get_coupons` her okumada tercihleri `rules.selection_won` ile maç sonucundan hesaplar (bir tercih yattı → `lost`,
+  hepsi tuttu → `won`, sonucu bekleyen var → `pending`). Skor girilince kupon kendiliğinden değerlendirilir; ayrı bir değerlendirme işi yazma.
+- **Oynanan maç işareti saklanmaz:** `coupon_items`'tan türetilir (`_enrich_matches` → `played`, listede "🎟️ Oynandı").
+  Kupon formundaki "Oynanan maçı bir daha oynama" (`exclude_played`) bu maçları yeni kupona almaz; kupon silinince işaret kalkar.
 - **Gemini sadece maç analizi (tahmin) için kullanılır.** Eski "İnternetten Tara" / `fetch_live_team_stats` kaldırıldı — **geri ekleme**.
 - **"Oynanmaması gerekenler" (avoid_bets)** token tasarrufu için kaldırıldı; `predictions.avoid_bets_json` eski sütun olarak duruyor, kullanılmıyor — **geri ekleme**.
 
@@ -137,7 +147,9 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
 | `match_stats` | `id`, `match_id` (UNIQUE), `h2h_json`, `home_last_matches_json`, `away_last_matches_json`, `missing_players_json`, `league_table_json`, `updated_at` |
 | `predictions` | `id`, `match_id`, `predicted_ht_result`, `predicted_ft_result`, `predicted_over_under_3`, `predicted_kg`, `predicted_score`, `confidence_score`, `ai_analysis_summary`, `predicted_total_points` (basketbol), `best_bet_market`, `best_bet_selection`, `best_bet_confidence`, `best_bet_reason`, `best_bet_odds`, `alt_bet_market`, `alt_bet_selection`, `alt_bet_confidence`, `alt_bet_odds`, `over_under_line`, `avoid_bets_json` (kullanılmıyor), `created_at` |
 | `results` | `id`, `match_id`, `ht_home_score`, `ht_away_score`, `ft_home_score`, `ft_away_score`, `is_over_3_goals`, `is_kg_var` (basketbolda NULL), `updated_at` |
-| `settings` | `key` (PK), `value`, `updated_at` — örn. panelden kaydedilen Gemini genel anahtarı |
+| `settings` | `key` (PK), `value`, `updated_at` — panelden kaydedilen Gemini anahtarı ve kupon oran kuralları (`min_match_odds`, `min_coupon_odds`) |
+| `coupons` | `id`, `strategy`, `total_odds`, `created_at` — oynanan kuponlar |
+| `coupon_items` | `id`, `coupon_id`, `match_id`, `pick` (`best_bet` / `alt_bet`), `market`, `selection`, `odds`, `confidence` |
 
 `CREATE TABLE IF NOT EXISTS` mevcut tabloyu güncellemez: yeni sütun için `init_db` içine `ALTER TABLE` migration ekle.
 `betting_engine.db` gerçek veri içerir.
@@ -155,6 +167,8 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
 | `DEFAULT_LEAGUE_GEMINI_ANALYSIS` | `0` | Yeni liglerin varsayılan izni |
 | `MATCH_COMPLETION_DELAY_MINUTES` | `150` | Maç bitti sayılma süresi |
 | `MIN_CONFIDENCE_FOR_COUPON` | `70` | Banko kupon güven eşiği |
+| `MIN_MATCH_ODDS` | `1.30` | Kupon: maç tercihi için min oran varsayılanı (Ayarlar'dan değiştirilebilir) |
+| `MIN_COUPON_TOTAL_ODDS` | `2.00` | Kupon: min toplam oran varsayılanı (Ayarlar'dan değiştirilebilir) |
 | `BATCH_REQUEST_DELAY` | `1.5` | Toplu analizde her worker'ın istekler arası beklemesi (sn) |
 | `GEMINI_PARALLEL_REQUESTS` | `3` | Toplu analizde eşzamanlı Gemini isteği (artırmak 429 riskini artırır) |
 | `MIN_BEST_BET_ODDS` | `1.30` | 2. tercih eşiği: ⭐ oranı bunun altındaysa oranı eşik ve üstü bir 2. tercih kaydedilir |
@@ -187,7 +201,12 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
 | GET / POST | `/api/admin/leagues`, `/api/admin/leagues/<id>/toggle`, `/api/admin/leagues/toggle_all` | Lig listesi (⭐ isabet dahil) ve izinleri |
 | POST | `/api/admin/leagues/<id>/analyze` | Lig maçlarını analiz et (istatistiği eksikler `skipped`) |
 | GET | `/api/stats` | Tahmin doğruluk raporu |
-| GET / POST | `/api/admin/settings`, `/api/admin/settings/gemini` | Gemini genel anahtarı |
+| GET / POST | `/api/admin/settings`, `/api/admin/settings/gemini` | Ayarlar (Gemini anahtarı, kupon oran kuralları) / Gemini genel anahtarı |
+| POST | `/api/admin/settings/coupon_odds` | Kupon oran kurallarını kaydet; `null` gönderilen kural `.env`'e döner |
+| POST | `/api/coupon/generate` | Kupon üret (`match_count`, `today_only`, `strategy`, `sport_type`, `exclude_played`); oran kuralları Ayarlar'dan |
+| GET / POST | `/api/coupons` | Oynanan kuponlar (tuttu / yattı / bekliyor + özet) / kupon kaydet `{"strategy", "matches": [{"id", "pick"}]}` |
+| DELETE | `/api/coupons/<id>` | Kayıtlı kuponu sil |
+| POST | `/api/coupon/ai_summary` | Kupon için Gemini yorumu (sadece butonla; Gemini kapalıysa 403) |
 
 ---
 

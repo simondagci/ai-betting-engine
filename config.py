@@ -29,6 +29,10 @@ MATCH_COMPLETION_DELAY_MINUTES = int(os.getenv("MATCH_COMPLETION_DELAY_MINUTES",
 # 6. Banko Kupon İçin Minimum Güven Eşiği (0 - 100)
 MIN_CONFIDENCE_FOR_COUPON = int(os.getenv("MIN_CONFIDENCE_FOR_COUPON", "70"))
 
+# Kupon motoru oran sınırları
+MIN_MATCH_ODDS = float(os.getenv("MIN_MATCH_ODDS", "1.20"))
+MIN_COUPON_TOTAL_ODDS = float(os.getenv("MIN_COUPON_TOTAL_ODDS", "2.00"))
+
 # 7. Toplu Analizlerde İstekler Arası Bekleme Süresi (Saniye)
 BATCH_REQUEST_DELAY = float(os.getenv("BATCH_REQUEST_DELAY", "1.5"))
 
