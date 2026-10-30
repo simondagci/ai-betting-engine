@@ -11,6 +11,7 @@ import data_source
 import gemini_engine
 import match_data
 import prediction_batch
+import results_sync
 import rules
 import stats_sync
 
@@ -206,51 +207,26 @@ MAX_RESULT_DAYS = 14
 @app.route("/api/admin/sync_results", methods=["POST"])
 def api_sync_results():
     """
-    Tamamlanmış ama skoru girilmemiş futbol ve basketbol maçlarının (son 'days' gün) sonuçlarını veri kaynağından çekip kaydeder.
-    Sadece normal süresinde biten maçlar yazılır (futbolda ilk yarı skoru da bilinmeli); diğerleri 'missing' olarak raporlanır.
+    Tamamlanmış ama skoru girilmemiş futbol ve basketbol maçlarının (son 'days' gün) sonuçlarını arka planda çeker
+    (ilerleme: /api/admin/jobs/results). Skoru zaten girilmiş maçlar tekrar güncellenmez.
     """
     if not data_source.supports_results():
         return jsonify({"success": False, "error": f"{data_source.source_name()} otomatik sonuç çekmeyi desteklemiyor."}), 400
     data = request.get_json(silent=True) or {}
     days = min(max(int(data.get("days") or 7), 1), MAX_RESULT_DAYS)
 
-    with database.db_session() as conn:
-        database.update_expired_matches(conn)
-        awaiting = [
-            {**m, "sport_type": sport}
-            for sport in (rules.FOOTBALL, rules.BASKETBALL)
-            for m in database.get_matches_awaiting_results(conn, sport_type=sport, days=days)
-        ]
-    requests_needed = sorted({(m["result_date"], m["sport_type"]) for m in awaiting})
+    return jsonify({"success": True, "source": data_source.source_name(), "days": days,
+                    "job": results_sync.start_background(days=days)})
 
-    # Ağ istekleri DB bağlantısı açık tutulmadan yapılır
-    results_by_code: Dict[str, Dict[str, Any]] = {}
-    for date_str, sport in requests_needed:
-        for res in data_source.fetch_match_results(date_str, is_basketball=rules.is_basketball(sport)) or []:
-            results_by_code[res["code"]] = res
+@app.route("/api/admin/jobs/results")
+def api_results_job_status():
+    """Sonuç çekme işinin ilerleme durumunu döner."""
+    return jsonify({"success": True, "job": results_sync.get_status()})
 
-    updated = []
-    with database.db_session() as conn:
-        for match in awaiting:
-            res = results_by_code.get(str(match["code"]))
-            if not res:
-                continue
-            # Futbolda İY tahmini değerlendirildiği için ilk yarı skoru zorunlu; basketbolda yoksa boş bırakılır
-            if not rules.is_basketball(match["sport_type"]) and (res["ht_home"] is None or res["ht_away"] is None):
-                continue
-            database.save_result(conn, match["id"], res["ht_home"], res["ht_away"], res["ft_home"], res["ft_away"])
-            updated.append({"code": match["code"], "score": f"{res['ft_home']}-{res['ft_away']}"})
-
-    return jsonify({
-        "success": True,
-        "source": data_source.source_name(),
-        "days": days,
-        "checked_dates": sorted({date_str for date_str, _ in requests_needed}),
-        "awaiting": len(awaiting),
-        "updated_count": len(updated),
-        "missing_count": len(awaiting) - len(updated),
-        "updated": updated
-    })
+@app.route("/api/admin/jobs/results/cancel", methods=["POST"])
+def api_cancel_results_job():
+    """Çalışan sonuç çekme işini durdurur."""
+    return jsonify({"success": True, "job": results_sync.cancel()})
 
 @app.route("/api/admin/sync_stats", methods=["POST"])
 def api_sync_stats_batch():

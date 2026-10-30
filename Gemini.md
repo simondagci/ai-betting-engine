@@ -28,10 +28,11 @@ python3 -m unittest test_app -v
 | Dosya | Sorumluluk |
 | :--- | :--- |
 | `config.py` | Tüm ayarlar `.env` üzerinden (`os.getenv` + varsayılan). Yeni ayar buraya **ve** `.env.example`'a eklenir. |
-| `rules.py` | **İş kurallarının tek kaynağı:** İY/MS sonuç etiketi, 3 gol Alt/Üst, KG, tahmin değerlendirme (`evaluate_prediction`), değerli tercih adayları (`bet_candidates`, `BET_OPTIONS`), seçim değerlendirme (`selection_won`), Türkçe karakter normalizasyonu (`normalize_selection`) |
+| `rules.py` | **İş kurallarının tek kaynağı:** İY/MS sonuç etiketi, 3 gol Alt/Üst, KG, tahmin değerlendirme (`evaluate_prediction`), ⭐ / 2. tercih adayları (`bet_candidates`, `BET_OPTIONS`, `BEST_BET_MARKETS`), seçim değerlendirme (`selection_won`), Türkçe karakter normalizasyonu (`normalize_selection`) |
 | `match_data.py` | Gemini'ye gönderme kuralı: `REQUIRED_SECTIONS` (ev son maçlar, deplasman son maçlar, H2H), `load_context_for_analysis` (eksikse veri kaynağından bir kez daha dener), `merge_stats`, `fetch_and_save_stats` |
 | `background_job.py` | Genel arka plan iş altyapısı `BackgroundJob`: aynı anda tek iş, paralel worker'lar (ortak kuyruk), ilerleme / kalan süre, iptal, art arda hata sınırı, `StopJob` |
 | `stats_sync.py` | Toplu istatistik işi (bülten sonrası otomatik başlar). Web'de arka plan thread'i, terminalde ilerleme çubuğu. Yarıda kalırsa kalan maçlar sonraki çalıştırmada işlenir |
+| `results_sync.py` | Toplu maç sonuçları işi: tamamlanmış ama skoru olmayan maçların skorlarını arka planda çeker (`/api/admin/jobs/results`). Skoru olan maçlar atlanır ve tekrar güncellenmez |
 | `prediction_batch.py` | "🔮 Maçları Analiz Et": bitmemiş, analiz edilmemiş, istatistikleri dolu, ligi izinli maçları `GEMINI_PARALLEL_REQUESTS` paralel istekle Gemini'ye gönderir. Gemini kapatılırsa (`StopJob`) veya art arda 5 hata olursa durur |
 | `data_source.py` | Aktif veri kaynağı seçimi (`DATA_SOURCE=iddaa\|nesine`). `app.py` / `web_server.py` kaynak modüllerini **doğrudan değil bunun üzerinden** çağırır |
 | `iddaa_api.py` | iddaa.com bülten / istatistik / sonuç çağrıları; veriyi Nesine bülten formatına ve uygulama istatistik formatına dönüştürür |
@@ -41,7 +42,7 @@ python3 -m unittest test_app -v
 | `app.py` | Terminal menüsü — `MENU_ITEMS` listesi (etiket, fonksiyon) + `main_menu()` |
 | `web_server.py` | Flask dashboard + `/api/...` JSON endpoint'leri (bkz. §7) |
 | `templates/index.html` | Maç listesi (sıralanabilir tablo, `?view=`), iş ilerleme çubukları, Lig Yönetimi (`#admin`: Ligler & Bülten, Ayarlar) |
-| `templates/match_detail.html` | `/matches/<id>`: highlights, Quick Actions, İstatistikler / Oranlar / Detaylar sekmeleri, ⭐ değerli tercih kutusu |
+| `templates/match_detail.html` | `/matches/<id>`: highlights, Quick Actions, İstatistikler / Oranlar / Detaylar sekmeleri, ⭐ en güçlü tercih ve 2. tercih kutuları |
 | `static/app.css`, `static/common.js` | Ortak açık tema (Salesforce Lightning esinli) ve JS yardımcıları (`esc`, `api`, `showToast`, `openModal`, `requestPrediction`, `pickMainOdds`) |
 | `main.py` | Sadece `app.main_menu()` çağırır |
 | `test_app.py` | `unittest` testleri (ağ çağrıları mock'lanır, geçici DB kullanılır) |
@@ -84,13 +85,16 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
   - Genel anahtarın etkin değeri `database.is_gemini_enabled(conn)`: Web › Lig Yönetimi › Ayarlar'dan kaydedilen `settings` değeri, yoksa `.env` `ENABLE_GEMINI_ANALYSIS`. **`config.ENABLE_GEMINI_ANALYSIS`'i doğrudan okuma.**
   - Gemini'ye istek atan her web endpoint'i `_gemini_disabled_response` ile kontrol eder (403 `GEMINI_DISABLED`).
   - Tek maç analizi: lig izni kapalıysa 409 `LEAGUE_DISABLED` (`{"enable_league": true}` ile izin açılıp analiz yapılır); istatistik eksikse 409 `MISSING_STATS`.
-- **⭐ Değerli tercih (value bet):**
-  - Prompt'a sadece oranı `MIN_BEST_BET_ODDS` (1.30) ve üstü adaylar (`rules.bet_candidates`) oran ve piyasa olasılığıyla gider.
-    Futbol: MS, İY, 3 gol ALT/ÜST (3.5 baremi), KG, Çifte Şans. Basketbol: sadece MS ve İY.
-  - Gemini her aday için kendi olasılığını tahmin eder; olasılık × oran (beklenen değer) en yüksek ve 1'den büyük seçimi
-    `best_bet_selection` olarak yazar, hiçbiri değerli değilse `'YOK'`.
-  - `gemini_engine.finalize_best_bet` seçimin aday listesinde olduğunu ve beklenen değerin > 1 olduğunu doğrular; değilse tercih boşaltılır.
-  - Değerli tercih "en olası" tahminden farklı olabilir; değerlendirme `rules.selection_won` ile **seçimin kendisine** göre yapılır. Oran `predictions.best_bet_odds`'a yazılır.
+- **⭐ En güçlü tercih + 2. tercih:**
+  - ⭐ `best_bet_*`: Gemini'nin kendi tahmin marketlerinden (futbol: MS, İY, 3 gol ALT/ÜST = 3.5 baremi, KG; basketbol: MS, İY)
+    gerçekleşeceğine **en çok güvendiği** seçim. Oran sınırı yoktur (1.10'luk favori olabilir). Çifte Şans ⭐ olamaz.
+  - 2. tercih `alt_bet_*`: ⭐ seçimin oranı `MIN_BEST_BET_ODDS` (1.30) **altındaysa**, oranı eşik ve üstü seçenekler (Çifte Şans dahil)
+    arasından Gemini'nin en çok güvendiği seçim + olasılığı (`alt_bet_confidence`). ⭐ oranı eşik ve üstüyse 2. tercih kaydedilmez.
+  - Prompt'a tüm adaylar oran ve piyasa olasılığıyla gider. `gemini_engine.finalize_best_bet` seçimlerin ilgili aday listesinde
+    olduğunu ve 2. tercih kuralını doğrular; geçersizse ilgili tercih `None` olur.
+  - İkisi de tahminden farklı olabilir; değerlendirme `rules.selection_won` ile **seçimin kendisine** göre yapılır
+    (`evaluation["best_bet"]`, `evaluation["alt_bet"]`). Oranlar `best_bet_odds` / `alt_bet_odds`'a yazılır.
+    Lig Yönetimi'nde ⭐ İsabet ve 2. Tercih İsabet ayrı sütunlardır; listede "2. Tercih" ve "2. Tercih %" sütunları vardır.
 - **Gemini sadece maç analizi (tahmin) için kullanılır.** Eski "İnternetten Tara" / `fetch_live_team_stats` kaldırıldı — **geri ekleme**.
 - **"Oynanmaması gerekenler" (avoid_bets)** token tasarrufu için kaldırıldı; `predictions.avoid_bets_json` eski sütun olarak duruyor, kullanılmıyor — **geri ekleme**.
 
@@ -131,7 +135,7 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
 | `matches` | `id`, `code` (bülten maç kodu), `home_team_id`, `away_team_id`, `league_id`, `match_date` (`DD.MM.YYYY`), `match_time`, `sport_type`, `status`, `match_completed` (0/1) |
 | `odds` | `id`, `match_id`, `market_type`, `market_name`, `option_name`, `odds_value` |
 | `match_stats` | `id`, `match_id` (UNIQUE), `h2h_json`, `home_last_matches_json`, `away_last_matches_json`, `missing_players_json`, `league_table_json`, `updated_at` |
-| `predictions` | `id`, `match_id`, `predicted_ht_result`, `predicted_ft_result`, `predicted_over_under_3`, `predicted_kg`, `predicted_score`, `confidence_score`, `ai_analysis_summary`, `predicted_total_points` (basketbol), `best_bet_market`, `best_bet_selection`, `best_bet_confidence`, `best_bet_reason`, `best_bet_odds`, `over_under_line`, `avoid_bets_json` (kullanılmıyor), `created_at` |
+| `predictions` | `id`, `match_id`, `predicted_ht_result`, `predicted_ft_result`, `predicted_over_under_3`, `predicted_kg`, `predicted_score`, `confidence_score`, `ai_analysis_summary`, `predicted_total_points` (basketbol), `best_bet_market`, `best_bet_selection`, `best_bet_confidence`, `best_bet_reason`, `best_bet_odds`, `alt_bet_market`, `alt_bet_selection`, `alt_bet_confidence`, `alt_bet_odds`, `over_under_line`, `avoid_bets_json` (kullanılmıyor), `created_at` |
 | `results` | `id`, `match_id`, `ht_home_score`, `ht_away_score`, `ft_home_score`, `ft_away_score`, `is_over_3_goals`, `is_kg_var` (basketbolda NULL), `updated_at` |
 | `settings` | `key` (PK), `value`, `updated_at` — örn. panelden kaydedilen Gemini genel anahtarı |
 
@@ -153,7 +157,7 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
 | `MIN_CONFIDENCE_FOR_COUPON` | `70` | Banko kupon güven eşiği |
 | `BATCH_REQUEST_DELAY` | `1.5` | Toplu analizde her worker'ın istekler arası beklemesi (sn) |
 | `GEMINI_PARALLEL_REQUESTS` | `3` | Toplu analizde eşzamanlı Gemini isteği (artırmak 429 riskini artırır) |
-| `MIN_BEST_BET_ODDS` | `1.30` | ⭐ değerli tercih adayı için minimum oran |
+| `MIN_BEST_BET_ODDS` | `1.30` | 2. tercih eşiği: ⭐ oranı bunun altındaysa oranı eşik ve üstü bir 2. tercih kaydedilir |
 | `GEMINI_TIMEOUT_SECONDS` | `120` | Tek Gemini isteği zaman aşımı (bilgisayar uyursa / ağ koparsa sonsuza kadar beklemez) |
 | `DB_FILE_PATH` | `betting_engine.db` | Testler bunu geçici dizine yönlendirir |
 | `DATA_SOURCE` | `iddaa` | `iddaa` veya `nesine` (Nesine istatistikleri Türkiye dışından engelli) |
@@ -175,9 +179,10 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
 | POST | `/api/matches/<id>/result` | Manuel skor girişi |
 | POST | `/api/matches/<id>/analyze` | Tek maç Gemini analizi (403 `GEMINI_DISABLED`, 409 `MISSING_STATS` / `LEAGUE_DISABLED`) |
 | POST | `/api/admin/sync_bulletin` | Bülteni çek, ardından istatistik işini başlat |
-| POST | `/api/admin/sync_results` | Bitmiş maç sonuçlarını çek (futbol + basketbol) |
+| POST | `/api/admin/sync_results` | Sonuç işini başlat: bitmiş, skoru girilmemiş maçlar (futbol + basketbol), son `days` gün |
 | POST | `/api/admin/sync_stats` | Toplu istatistik işini başlat |
 | GET / POST | `/api/admin/jobs/stats`, `/api/admin/jobs/stats/cancel` | İstatistik işi ilerlemesi / iptal |
+| GET / POST | `/api/admin/jobs/results`, `/api/admin/jobs/results/cancel` | Sonuç çekme işi ilerlemesi / iptal |
 | GET / POST | `/api/admin/jobs/predictions`, `.../start`, `.../cancel` | Toplu analiz ilerlemesi (uygun maç sayısıyla) / başlat / iptal |
 | GET / POST | `/api/admin/leagues`, `/api/admin/leagues/<id>/toggle`, `/api/admin/leagues/toggle_all` | Lig listesi (⭐ isabet dahil) ve izinleri |
 | POST | `/api/admin/leagues/<id>/analyze` | Lig maçlarını analiz et (istatistiği eksikler `skipped`) |
@@ -204,18 +209,21 @@ Sen profesyonel bir futbol veri analisti, kıdemli bahis stratejisti ve yapay ze
 4. Lig Puan Durumu (Sıra. Takım | O G B M | Gol | Puan | Son 5)  5. Sakat/Cezalı (iddaa.com'da yok)
 --- ÇOK ÖNEMLİ İŞ KURALI (ALT / ÜST SINIRI: 3 GOL) ---
 Toplam gol >= 4 ise "ÜST", <= 3 ise "ALT".
---- DEĞERLİ TERCİH (best_bet) ---       ← {data["value"]}: oranı ≥ MIN_BEST_BET_ODDS adaylar
-- MS 2 (Maç Sonu) | Oran 2.88 | Piyasa olasılığı %35
+--- EN GÜÇLÜ TERCİH (best_bet) VE 2. TERCİH (alt_bet) ---   ← {data["best_bet"]}: tüm adaylar
+- MS 1 (Maç Sonu) | Oran 1.10 | Piyasa olasılığı %91
+- KG VAR (Karşılıklı Gol) | Oran 1.74 | Piyasa olasılığı %57
 ...
-Kendi olasılığın x oran değeri EN YÜKSEK ve 1'den büyük TEK seçeneği (listedeki yazımıyla) seç, yoksa 'YOK'.
+1) best_bet: Çifte Şans hariç en çok güvendiğin seçenek + olasılık + gerekçe.
+2) alt_bet: best_bet oranı MIN_BEST_BET_ODDS altındaysa, oranı eşik ve üstü seçenekler (Çifte Şans dahil) arasından
+   en çok güvendiğin seçenek + olasılık; değilse 'YOK' / 0.
 ```
 
 **Futbol şeması (`MatchPrediction`):** `analysis_summary`, `predicted_ht_result`, `predicted_ft_result`,
 `predicted_over_under_3`, `predicted_kg`, `predicted_score`, `confidence_score`, `best_bet_selection`,
-`best_bet_confidence`, `best_bet_reason`.
+`best_bet_confidence`, `best_bet_reason`, `alt_bet_selection`, `alt_bet_confidence`.
 
 **Basketbol (`BasketballPrediction`):** rol "basketbol veri analisti"; 3 gol kuralı ve KG yok; `predicted_total_points`
-istenir; MS beraberliksiz; değerli tercih adayları sadece MS ve İY.
+istenir; MS beraberliksiz; ⭐ ve 2. tercih adayları sadece MS ve İY.
 
 ---
 

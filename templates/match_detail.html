@@ -303,31 +303,49 @@
         const resultMark = correct => correct === true ? ' <span class="text-success" title="Tuttu">✓</span>'
             : correct === false ? ' <span class="text-error" title="Tutmadı">✗</span>' : '';
 
-        // isBest: Gemini'nin değerli tercihi (⭐) bu kutudaki tahminin aynısıysa kutu vurgulanır
+        // isBest: Gemini'nin en güçlü tercihi (⭐) bu kutudaki tahminin aynısıysa kutu vurgulanır
         function predictionCell(label, value, correct, isBest = false) {
-            const star = isBest ? '<span class="best-star" title="Gemini\'nin değerli tercihi">⭐</span>' : '';
+            const star = isBest ? '<span class="best-star" title="Gemini\'nin en güçlü tercihi">⭐</span>' : '';
             return `<div class="prediction-cell ${isBest ? 'best' : ''}">${star}<div class="label">${esc(label)}</div>
                 <div class="value">${esc(value || '—')}${resultMark(correct)}</div></div>`;
         }
 
-        function renderBestBet(p) {
-            const bet = p.best_bet;
-            if (!bet) return '';
-            const verdict = p.evaluation && p.evaluation.best_bet !== undefined && p.evaluation.best_bet !== null
-                ? (p.evaluation.best_bet ? '<span class="badge badge-success">✓ Tuttu</span>' : '<span class="badge badge-error">✗ Tutmadı</span>')
-                : (bet.confidence !== null && bet.confidence !== undefined ? `<span class="badge badge-gold">%${esc(bet.confidence)}</span>` : '');
-            // Beklenen değer: Gemini olasılığı x oran (1'in üstü = uzun vadede kârlı tercih)
-            const facts = [
+        function betVerdict(won, confidence) {
+            if (won !== undefined && won !== null) {
+                return won ? '<span class="badge badge-success">✓ Tuttu</span>' : '<span class="badge badge-error">✗ Tutmadı</span>';
+            }
+            return confidence !== null && confidence !== undefined ? `<span class="badge badge-gold">%${esc(confidence)}</span>` : '';
+        }
+
+        function betFacts(bet) {
+            return [
                 bet.odds ? `Oran <strong>${Number(bet.odds).toFixed(2)}</strong>` : null,
                 bet.confidence ? `Gemini olasılığı <strong>%${esc(bet.confidence)}</strong>` : null,
                 bet.odds ? `Piyasa olasılığı %${Math.round(100 / bet.odds)}` : null,
-                bet.odds && bet.confidence ? `Beklenen değer <strong>${(bet.confidence / 100 * bet.odds).toFixed(2)}</strong>` : null,
             ].filter(Boolean);
-            return `<div class="best-bet">
-                <div class="best-bet-head"><span>⭐ Değerli tercih: ${esc(bet.selection)}</span>${verdict}</div>
-                ${facts.length ? `<div class="best-bet-reason">${facts.join(' · ')}</div>` : ''}
-                ${bet.reason ? `<div class="best-bet-reason">${esc(bet.reason)}</div>` : ''}
-            </div>`;
+        }
+
+        // ⭐ en güçlü tercih; oranı MIN_BEST_BET_ODDS altındaysa altında Gemini'nin 2. tercihi (oranı eşik ve üstü) gösterilir
+        function renderBestBet(p) {
+            const ev = p.evaluation || {};
+            const boxes = [];
+            if (p.best_bet) {
+                const facts = betFacts(p.best_bet);
+                boxes.push(`<div class="best-bet">
+                    <div class="best-bet-head"><span>⭐ En güçlü tercih: ${esc(p.best_bet.selection)}</span>${betVerdict(ev.best_bet, p.best_bet.confidence)}</div>
+                    ${facts.length ? `<div class="best-bet-reason">${facts.join(' · ')}</div>` : ''}
+                    ${p.best_bet.reason ? `<div class="best-bet-reason">${esc(p.best_bet.reason)}</div>` : ''}
+                </div>`);
+            }
+            if (p.alt_bet) {
+                const facts = betFacts(p.alt_bet);
+                boxes.push(`<div class="best-bet alt-bet">
+                    <div class="best-bet-head"><span>2. tercih: ${esc(p.alt_bet.selection)}</span>${betVerdict(ev.alt_bet, p.alt_bet.confidence)}</div>
+                    <div class="best-bet-reason">⭐ tercihin oranı düşük olduğu için oranı daha yüksek seçenekler arasından seçildi.</div>
+                    ${facts.length ? `<div class="best-bet-reason">${facts.join(' · ')}</div>` : ''}
+                </div>`);
+            }
+            return boxes.join('');
         }
 
         // Basketbol: maç sonu toplam sayı tahmini; maç bittiyse gerçek toplam ve fark gösterilir
@@ -348,7 +366,7 @@
                     </div></div>`;
             }
             const ev = p.evaluation || {};
-            // ⭐ değerli tercih tahminle aynıysa ilgili kutu vurgulanır (farklı bir seçim de olabilir, örn. tahmin MS 1, ⭐ KG VAR)
+            // ⭐ en güçlü tercih tahminle aynıysa ilgili kutu vurgulanır (farklı bir seçim de olabilir, örn. tahmin MS 1, ⭐ KG VAR)
             const predictedByMarket = { ft: p.predicted_ft_result, ht: p.predicted_ht_result, over_under: p.predicted_over_under_3, kg: p.predicted_kg };
             const bestMarket = p.best_bet && predictedByMarket[p.best_bet.market] === p.best_bet.selection ? p.best_bet.market : null;
             // Basketbolda Alt/Üst ve KG yoktur; yerine maç sonu toplam sayı tahmini gösterilir

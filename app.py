@@ -248,8 +248,12 @@ def display_prediction_card(match_info: Dict[str, Any], pred: Dict[str, Any], od
     best_bet = pred.get('best_bet')
     if best_bet:
         odds = f"oran {best_bet['odds']:.2f}, " if best_bet.get('odds') else ""
-        print(f"⭐ Değerli Tercih       : {Colors.YELLOW}{Colors.BOLD}{best_bet.get('selection')}{Colors.ENDC} "
+        print(f"⭐ En Güçlü Tercih     : {Colors.YELLOW}{Colors.BOLD}{best_bet.get('selection')}{Colors.ENDC} "
               f"({odds}%{best_bet.get('confidence')}) {Colors.DIM}{best_bet.get('reason') or ''}{Colors.ENDC}")
+    alt_bet = pred.get('alt_bet')
+    if alt_bet:
+        odds = f"oran {alt_bet['odds']:.2f}, " if alt_bet.get('odds') else ""
+        print(f"2. Tercih             : {Colors.BOLD}{alt_bet.get('selection')}{Colors.ENDC} ({odds}%{alt_bet.get('confidence')})")
     print(f"\n📝 {Colors.BOLD}Taktiksel Analiz Özeti:{Colors.ENDC}")
     print(f"   {Colors.CYAN}{pred.get('analysis_summary')}{Colors.ENDC}")
     print(f"{Colors.GREEN}{'='*64}{Colors.ENDC}\n")
@@ -454,7 +458,8 @@ def display_accuracy_report() -> None:
         ("⚽ 3 Gol Alt/Üst Doğruluğu    ", "over_under_3_accuracy", "ou_correct", "ou_total"),
         ("🤝 Karşılıklı Gol Doğruluğu   ", "kg_accuracy", "kg_correct", "kg_total"),
         ("🎯 Tam Skor İsabeti           ", "score_accuracy", "score_correct", "score_total"),
-        ("⭐ Değerli Tercih İsabeti     ", "best_bet_accuracy", "best_bet_correct", "best_bet_total"),
+        ("⭐ En Güçlü Tercih İsabeti    ", "best_bet_accuracy", "best_bet_correct", "best_bet_total"),
+        ("2. Tercih İsabeti             ", "alt_bet_accuracy", "alt_bet_correct", "alt_bet_total"),
     ]
     for label, acc_key, correct_key, total_key in rows:
         if not metrics[total_key]:

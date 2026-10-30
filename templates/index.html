@@ -22,9 +22,9 @@
     <main class="page">
         <!-- KPI -->
         <div class="kpi-row">
-            <div class="card kpi"><div class="kpi-label">Bitmemiş Maç</div><div class="kpi-value" id="kpiUnfinished">—</div></div>
+            <div class="card kpi" id="kpiCardUnfinished" style="cursor:pointer;" title="Bitmemiş maçları listelemek için tıklayın"><div class="kpi-label">Bitmemiş Maç</div><div class="kpi-value" id="kpiUnfinished">—</div></div>
             <div class="card kpi"><div class="kpi-label">AI Analizli (Bitmemiş)</div><div class="kpi-value" id="kpiAnalyzed">—</div></div>
-            <div class="card kpi"><div class="kpi-label">Son 2 Günde Biten</div><div class="kpi-value" id="kpiCompleted2d">—</div></div>
+            <div class="card kpi" id="kpiCardCompleted2d" style="cursor:pointer;" title="Son 2 günde biten maçları listelemek için tıklayın"><div class="kpi-label">Son 2 Günde Biten</div><div class="kpi-value" id="kpiCompleted2d">—</div></div>
             <div class="card kpi"><div class="kpi-label">İzinli Ligler</div><div class="kpi-value" id="kpiLeagues">—</div></div>
             <div class="card kpi"><div class="kpi-label">Gemini AI</div><div class="kpi-value" id="kpiGemini" style="font-size:16px;">—</div></div>
         </div>
@@ -47,9 +47,9 @@
                             <div>
                                 <div class="object-label">Maçlar</div>
                                 <select class="view-picker" id="viewPicker" aria-label="Liste görünümü">
-                                    <option value="UNFINISHED">Bitmemiş Maçlar</option>
-                                    <option value="COMPLETED_2DAYS">Son 2 Günde Bitenler</option>
-                                    <option value="COMPLETED_ALL">Tüm Bitenler</option>
+                                    <option value="UNFINISHED">⏳ Bitmemiş Maçlar</option>
+                                    <option value="COMPLETED_2DAYS">🏁 Son 2 Günde Bitenler (Skorlu)</option>
+                                    <option value="COMPLETED_ALL">📚 Tüm Bitenler (Skorlu)</option>
                                 </select>
                             </div>
                         </div>
@@ -114,11 +114,10 @@
                     <div class="setting-row">
                         <div>
                             <div class="setting-title">🏁 Maç Sonuçları</div>
-                            <p class="setting-desc">Son 7 gün içinde tamamlanmış ama skoru girilmemiş futbol maçlarının İY / MS skorlarını otomatik çeker. Uzatma, penaltı veya ertelenme durumundaki maçların skoru elle girilmelidir.</p>
+                            <p class="setting-desc">Son 7 gün içinde tamamlanmış ama skoru henüz girilmemiş maçların (futbol + basketbol) sonuçlarını arka planda çeker. Skoru zaten kayıtlı olan maçlar atlanır ve tekrar güncellenmez. İlerleme sayfanın üstünde görünür.</p>
                         </div>
                         <button class="btn" id="btnSyncResults" type="button">🏁 Sonuçları Çek</button>
                     </div>
-                    <div class="sync-summary" id="resultsSummary" hidden></div>
 
                     <div class="setting-row">
                         <div>
@@ -161,13 +160,14 @@
                                 <th class="num">Bitmemiş</th>
                                 <th class="num">Analizli</th>
                                 <th class="num" title="Sonucu girilmiş ve Gemini tahmini olan maç sayısı">Değerlendirilen</th>
-                                <th class="num" title="Gemini'nin değerli tercihinin (⭐) tutma oranı">⭐ İsabet</th>
+                                <th class="num" title="Gemini'nin en güçlü tercihinin (⭐) tutma oranı">⭐ İsabet</th>
+                                <th class="num" title="2. tercihin (⭐ oranı düşükken önerilen) tutma oranı">2. Tercih İsabet</th>
                                 <th class="center">Gemini İzni</th>
                                 <th></th>
                             </tr>
                         </thead>
                         <tbody id="leaguesBody">
-                            <tr><td class="empty-state" colspan="10">Ligler yükleniyor...</td></tr>
+                            <tr><td class="empty-state" colspan="11">Ligler yükleniyor...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -262,6 +262,31 @@
             if (state.view === 'UNFINISHED') params.delete('view'); else params.set('view', state.view);
             const query = params.toString();
             history.replaceState(null, '', location.pathname + (query ? `?${query}` : '') + location.hash);
+            renderSubFilters();
+        }
+
+        function renderSubFilters() {
+            const container = document.getElementById('subFilters');
+            if (!container) return;
+            if (isCompletedView()) {
+                container.innerHTML = `
+                    <button class="chip ${state.subFilter === 'ALL' ? 'active' : ''}" data-filter="ALL" type="button">Tümü</button>
+                    <button class="chip ${state.subFilter === 'HAS_SCORE' ? 'active' : ''}" data-filter="HAS_SCORE" type="button">🏁 Skorlu</button>
+                    <button class="chip ${state.subFilter === 'WON' ? 'active' : ''}" data-filter="WON" type="button">✅ Tutanlar</button>
+                    <button class="chip ${state.subFilter === 'LOST' ? 'active' : ''}" data-filter="LOST" type="button">❌ Yatanlar</button>
+                    <button class="chip ${state.subFilter === 'ANALYZED' ? 'active' : ''}" data-filter="ANALYZED" type="button">🔮 Tahminli</button>
+                    <button class="chip ${state.subFilter === 'FOOTBALL' ? 'active' : ''}" data-filter="FOOTBALL" type="button">Futbol</button>
+                    <button class="chip ${state.subFilter === 'BASKETBALL' ? 'active' : ''}" data-filter="BASKETBALL" type="button">Basketbol</button>
+                `;
+            } else {
+                container.innerHTML = `
+                    <button class="chip ${state.subFilter === 'ALL' ? 'active' : ''}" data-filter="ALL" type="button">Tümü</button>
+                    <button class="chip ${state.subFilter === 'ANALYZED' ? 'active' : ''}" data-filter="ANALYZED" type="button">AI Analizli</button>
+                    <button class="chip ${state.subFilter === 'PENDING' ? 'active' : ''}" data-filter="PENDING" type="button">Analiz Bekleyen</button>
+                    <button class="chip ${state.subFilter === 'FOOTBALL' ? 'active' : ''}" data-filter="FOOTBALL" type="button">Futbol</button>
+                    <button class="chip ${state.subFilter === 'BASKETBALL' ? 'active' : ''}" data-filter="BASKETBALL" type="button">Basketbol</button>
+                `;
+            }
         }
 
         // ==================== KPI ====================
@@ -303,7 +328,30 @@
         };
 
         function columns() {
-            const cols = [
+            if (isCompletedView()) {
+                return [
+                    { key: 'code', label: 'Maç Kodu', sort: m => Number(m.code) || m.code },
+                    { key: 'date', label: 'Tarih (DE)', sort: chronoKey },
+                    { key: 'teams', label: 'Karşılaşma', sort: m => (m.home_team || '').toLowerCase() },
+                    { key: 'score', label: 'Skor (MS / İY)', sort: m => hasScore(m) ? m.ft_home_score + m.ft_away_score : -1 },
+                    { key: 'eval', label: 'İsabet', sort: m => m.is_prediction_correct === true ? 1 : 0 },
+                    { key: 'league_name', label: 'Lig', sort: m => (m.league_name || '').toLowerCase() },
+                    { key: 'prediction', label: 'Gemini Tahmini', sort: m => m.predicted_score || '' },
+                    { key: 'confidence_score', label: 'Güven', sort: m => m.confidence_score ?? -1 },
+                    { key: 'best_bet_selection', label: 'Önerilen Tercih', sort: m => m.best_bet_selection || null },
+                    { key: 'best_bet_odds', label: 'Oran', num: true, sort: m => m.best_bet_odds ?? null },
+                    { key: 'best_bet_confidence', label: 'Tercih %', num: true, sort: m => m.best_bet_confidence ?? null },
+                    { key: 'alt_bet_selection', label: '2. Tercih', sort: m => m.alt_bet_selection || null },
+                    { key: 'alt_bet_confidence', label: '2. Tercih %', num: true, sort: m => m.alt_bet_confidence ?? null },
+                    { key: 'ms1', label: 'MS 1', num: true, sort: m => m._odds.ms1 },
+                    { key: 'ms0', label: 'MS 0', num: true, sort: m => m._odds.ms0 },
+                    { key: 'ms2', label: 'MS 2', num: true, sort: m => m._odds.ms2 },
+                    { key: 'u25', label: '2.5 Üst', num: true, sort: m => m._odds.u25 },
+                    { key: 'kg', label: 'KG Var', num: true, sort: m => m._odds.kg },
+                    { key: 'actions', label: '' },
+                ];
+            }
+            return [
                 { key: 'code', label: 'Maç Kodu', sort: m => Number(m.code) || m.code },
                 { key: 'date', label: 'Tarih (DE)', sort: chronoKey },
                 { key: 'teams', label: 'Karşılaşma', sort: m => (m.home_team || '').toLowerCase() },
@@ -315,23 +363,19 @@
                 { key: 'kg', label: 'KG Var', num: true, sort: m => m._odds.kg },
                 { key: 'prediction', label: 'Gemini Tahmini', sort: m => m.predicted_score || '' },
                 { key: 'confidence_score', label: 'Güven', sort: m => m.confidence_score ?? -1 },
-                // Gemini'nin değerli tercihi (⭐), bülten oranı ve Gemini'nin tahmin ettiği gerçekleşme olasılığı
                 { key: 'best_bet_selection', label: 'Önerilen Tercih', sort: m => m.best_bet_selection || null },
                 { key: 'best_bet_odds', label: 'Oran', num: true, sort: m => m.best_bet_odds ?? null },
                 { key: 'best_bet_confidence', label: 'Tercih %', num: true, sort: m => m.best_bet_confidence ?? null },
+                { key: 'alt_bet_selection', label: '2. Tercih', sort: m => m.alt_bet_selection || null },
+                { key: 'alt_bet_confidence', label: '2. Tercih %', num: true, sort: m => m.alt_bet_confidence ?? null },
+                { key: 'status', label: 'Durum', sort: m => m.predicted_score ? 1 : 0 },
+                { key: 'actions', label: '' },
             ];
-            if (isCompletedView()) {
-                cols.push({ key: 'score', label: 'Skor', sort: m => hasScore(m) ? m.ft_home_score + m.ft_away_score : -1 });
-            } else {
-                cols.push({ key: 'status', label: 'Durum', sort: m => m.predicted_score ? 1 : 0 });
-            }
-            cols.push({ key: 'actions', label: '' });
-            return cols;
         }
 
         async function loadMatches({ silent = false } = {}) {
             if (!silent) {
-                document.getElementById('matchesBody').innerHTML = `<tr><td class="empty-state" colspan="17">Maçlar yükleniyor...</td></tr>`;
+                document.getElementById('matchesBody').innerHTML = `<tr><td class="empty-state" colspan="${columns().length}">Maçlar yükleniyor...</td></tr>`;
             }
             // Gemini durumu satırdaki 🔮 butonunu etkilediği için tablo istatistiklerle birlikte çizilir
             const statsLoaded = loadStats();
@@ -341,7 +385,7 @@
                 renderMatches();
             } catch (err) {
                 document.getElementById('matchesBody').innerHTML =
-                    `<tr><td class="empty-state text-error" colspan="17">Maçlar alınamadı: ${esc(err.message)}</td></tr>`;
+                    `<tr><td class="empty-state text-error" colspan="${columns().length}">Maçlar alınamadı: ${esc(err.message)}</td></tr>`;
             }
         }
 
@@ -352,6 +396,9 @@
                 switch (state.subFilter) {
                     case 'ANALYZED': return Boolean(m.predicted_score);
                     case 'PENDING': return !m.predicted_score;
+                    case 'HAS_SCORE': return hasScore(m);
+                    case 'WON': return m.is_prediction_correct === true || m.best_bet_correct === true || m.alt_bet_correct === true;
+                    case 'LOST': return m.is_prediction_correct === false || m.best_bet_correct === false || m.alt_bet_correct === false;
                     case 'FOOTBALL': return m.sport_type === 'FOOTBALL';
                     case 'BASKETBALL': return m.sport_type === 'BASKETBALL';
                     default: return true;
@@ -391,31 +438,67 @@
                    <div class="cell-sub">${esc(predictionSubline(m, m.sport_type))}</div>`
                 : '<span class="muted">—</span>';
 
-            // Önerilen tercih (⭐): biten maçlarda tuttu / tutmadı işareti de gösterilir
-            const bestBetMark = m.best_bet_correct === true ? ' <span class="text-success" title="Tuttu">✓</span>'
-                : m.best_bet_correct === false ? ' <span class="text-error" title="Tutmadı">✗</span>' : '';
+            // Önerilen tercih (⭐) ve 2. tercih: biten maçlarda tuttu / tutmadı işareti de gösterilir
+            const betMark = correct => correct === true ? ' <span class="text-success" title="Tuttu">✓</span>'
+                : correct === false ? ' <span class="text-error" title="Tutmadı">✗</span>' : '';
             const bestBetCell = m.best_bet_selection
-                ? `<span class="badge badge-gold" title="Gemini'nin değerli tercihi">⭐ ${esc(m.best_bet_selection)}</span>${bestBetMark}`
+                ? `<span class="badge badge-gold" title="Gemini'nin en güçlü tercihi">⭐ ${esc(m.best_bet_selection)}</span>${betMark(m.best_bet_correct)}`
                 : '<span class="muted">—</span>';
+            const altBetCell = m.alt_bet_selection
+                ? `<span class="badge badge-brand" title="⭐ tercihin oranı düşük olduğu için Gemini'nin 2. tercihi">${esc(m.alt_bet_selection)}</span>${betMark(m.alt_bet_correct)}
+                   ${m.alt_bet_odds ? `<div class="cell-sub">Oran ${Number(m.alt_bet_odds).toFixed(2)}</div>` : ''}`
+                : '<span class="muted">—</span>';
+            const altBetConfidence = m.alt_bet_confidence !== null && m.alt_bet_confidence !== undefined
+                ? `<strong>%${esc(m.alt_bet_confidence)}</strong>` : '<span class="muted">—</span>';
             const bestBetOdds = m.best_bet_odds ? `<strong>${Number(m.best_bet_odds).toFixed(2)}</strong>` : '<span class="muted">—</span>';
             const bestBetConfidence = m.best_bet_confidence !== null && m.best_bet_confidence !== undefined
                 ? `<strong>%${esc(m.best_bet_confidence)}</strong>` : '<span class="muted">—</span>';
 
-            let lastCell;
             if (isCompletedView()) {
-                if (hasScore(m)) {
-                    const accuracy = m.is_prediction_correct === true ? '<span class="badge badge-success">MS ✓</span>'
-                        : m.is_prediction_correct === false ? '<span class="badge badge-error">MS ✗</span>' : '';
-                    lastCell = `<span class="score">${m.ft_home_score} - ${m.ft_away_score}</span> ${accuracy}
-                        <div class="cell-sub">İY ${m.ht_home_score ?? '—'}-${m.ht_away_score ?? '—'}</div>`;
-                } else {
-                    lastCell = '<span class="badge badge-warning">Skor bekleniyor</span>';
+                const scoreCell = hasScore(m)
+                    ? `<div style="white-space:nowrap;"><strong class="score" style="font-size:15px; font-weight:800; color:var(--brand);">${m.ft_home_score} - ${m.ft_away_score}</strong></div>
+                       <div class="cell-sub" style="white-space:nowrap;">İY ${m.ht_home_score ?? '—'}-${m.ht_away_score ?? '—'}${isBasketball(m.sport_type) ? ` · Toplam ${m.ft_home_score + m.ft_away_score}` : ''}</div>`
+                    : '<span class="badge badge-warning">Skor bekleniyor</span>';
+
+                let evalCell = '<span class="muted">—</span>';
+                if (hasScore(m) && m.predicted_score) {
+                    const msBadge = m.is_prediction_correct === true
+                        ? '<span class="badge badge-success" title="Maç Sonu Tahmini Tuttu">MS ✓</span>'
+                        : (m.is_prediction_correct === false ? '<span class="badge badge-error" title="Maç Sonu Tahmini Tutmadı">MS ✗</span>' : '');
+                    const bestBadge = m.best_bet_correct === true
+                        ? '<span class="badge badge-gold" title="Önerilen Tercih Tuttu">⭐ ✓</span>'
+                        : (m.best_bet_correct === false ? '<span class="badge badge-error" title="Önerilen Tercih Tutmadı">⭐ ✗</span>' : '');
+                    evalCell = `<div style="display:flex; gap:4px; flex-wrap:nowrap; white-space:nowrap;">${msBadge} ${bestBadge}</div>`;
                 }
-            } else {
-                lastCell = statusBadge(m);
+
+                return `
+                    <tr>
+                        <td><a class="record-link" href="${detailUrl}">${esc(m.code)}</a></td>
+                        <td title="${esc(trTitle)}" style="white-space:nowrap;">${esc(m.local_date || m.match_date)} <strong>${esc(m.local_time || m.match_time)}</strong></td>
+                        <td class="truncate" style="max-width:210px;" title="${esc(m.home_team)} – ${esc(m.away_team)}">
+                            <a href="${detailUrl}" style="color:inherit;">${isBasketball(m.sport_type) ? '<span title="Basketbol">🏀</span> ' : ''}${esc(m.home_team)} <span class="muted">–</span> ${esc(m.away_team)}</a>
+                        </td>
+                        <td>${scoreCell}</td>
+                        <td>${evalCell}</td>
+                        <td class="truncate" style="max-width:120px;" title="${esc(m.league_name)}">${esc(m.league_name)}</td>
+                        <td>${prediction}</td>
+                        <td>${confidenceBadge(m.confidence_score)}</td>
+                        <td>${bestBetCell}</td>
+                        <td class="num">${bestBetOdds}</td>
+                        <td class="num">${bestBetConfidence}</td>
+                        <td>${altBetCell}</td>
+                        <td class="num">${altBetConfidence}</td>
+                        <td class="num">${formatOdd(o.ms1)}</td>
+                        <td class="num">${formatOdd(o.ms0)}</td>
+                        <td class="num">${formatOdd(o.ms2)}</td>
+                        <td class="num">${formatOdd(o.u25)}</td>
+                        <td class="num">${formatOdd(o.kg)}</td>
+                        <td><a class="btn btn-sm" href="${detailUrl}">Detay</a></td>
+                    </tr>`;
             }
 
-            const action = !isCompletedView() && !m.predicted_score
+            const status = statusBadge(m);
+            const action = !m.predicted_score
                 ? `<button class="btn btn-sm" type="button" data-analyze="${m.id}"
                        ${state.geminiEnabled === false ? `disabled title="${esc(GEMINI_DISABLED_HINT)}"`
                          : !m.stats_ready ? `disabled title="${esc(MISSING_STATS_HINT)}"` : 'title="Gemini ile analiz et"'}
@@ -425,11 +508,11 @@
             return `
                 <tr>
                     <td><a class="record-link" href="${detailUrl}">${esc(m.code)}</a></td>
-                    <td title="${esc(trTitle)}">${esc(m.local_date || m.match_date)} <strong>${esc(m.local_time || m.match_time)}</strong></td>
-                    <td class="truncate" style="max-width:220px;" title="${esc(m.home_team)} – ${esc(m.away_team)}">
+                    <td title="${esc(trTitle)}" style="white-space:nowrap;">${esc(m.local_date || m.match_date)} <strong>${esc(m.local_time || m.match_time)}</strong></td>
+                    <td class="truncate" style="max-width:210px;" title="${esc(m.home_team)} – ${esc(m.away_team)}">
                         <a href="${detailUrl}" style="color:inherit;">${isBasketball(m.sport_type) ? '<span title="Basketbol">🏀</span> ' : ''}${esc(m.home_team)} <span class="muted">–</span> ${esc(m.away_team)}</a>
                     </td>
-                    <td class="truncate" style="max-width:130px;" title="${esc(m.league_name)}">${esc(m.league_name)}</td>
+                    <td class="truncate" style="max-width:120px;" title="${esc(m.league_name)}">${esc(m.league_name)}</td>
                     <td class="num">${formatOdd(o.ms1)}</td>
                     <td class="num">${formatOdd(o.ms0)}</td>
                     <td class="num">${formatOdd(o.ms2)}</td>
@@ -440,7 +523,9 @@
                     <td>${bestBetCell}</td>
                     <td class="num">${bestBetOdds}</td>
                     <td class="num">${bestBetConfidence}</td>
-                    <td>${lastCell}</td>
+                    <td>${altBetCell}</td>
+                    <td class="num">${altBetConfidence}</td>
+                    <td>${status}</td>
                     <td>${action}</td>
                 </tr>`;
         }
@@ -458,7 +543,7 @@
 
             if (rows.length === 0) {
                 const msg = state.matches.length === 0 ? `"${viewName}" görünümünde kayıt yok.` : 'Arama ve filtrelere uygun maç bulunamadı.';
-                body.innerHTML = `<tr><td class="empty-state" colspan="17">${esc(msg)}</td></tr>`;
+                body.innerHTML = `<tr><td class="empty-state" colspan="${columns().length}">${esc(msg)}</td></tr>`;
                 return;
             }
             body.innerHTML = rows.map(renderRow).join('');
@@ -518,17 +603,18 @@
         }
 
         async function syncResults(btn) {
-            await withBusyButton(btn, 'Sonuçlar çekiliyor', async () => {
+            await withBusyButton(btn, 'Başlatılıyor', async () => {
                 try {
                     const res = await postJson('/api/admin/sync_results', { days: 7 });
-                    renderSummary('resultsSummary', [
-                        ['Skoru Bekleyen Maç', res.awaiting],
-                        ['Sorgulanan Gün', res.checked_dates.length],
-                        ['Skoru Kaydedilen', res.updated_count],
-                        ['Bulunamayan', res.missing_count]
-                    ]);
-                    showToast(res.updated_count > 0 ? `${res.updated_count} maçın skoru kaydedildi.` : 'Kaydedilecek yeni skor bulunamadı.');
-                    if (res.updated_count > 0) loadMatches({ silent: true });
+                    const job = res.job;
+                    if (job.started) {
+                        showToast(`${job.total} maçın sonucu arka planda çekiliyor. İlerleme sayfanın üstünde.`, 'info');
+                    } else if (job.status === 'running') {
+                        showToast('Sonuç çekme işlemi zaten devam ediyor.', 'info');
+                    } else {
+                        showToast('Sonucu bekleyen maç bulunamadı; tüm sonuçlar güncel.');
+                    }
+                    resultsJob.render(job);
                 } catch (err) {
                     showToast(`Sonuçlar çekilemedi: ${err.message}`, 'error');
                 }
@@ -676,6 +762,27 @@
                 : job.status === 'cancelled' ? `Toplu analiz durduruldu (${job.processed} / ${job.total}).` : `Toplu analiz durdu: ${job.message}`
         });
 
+        const resultsJob = createJobWidget({
+            key: 'results',
+            statusUrl: '/api/admin/jobs/results',
+            cancelUrl: '/api/admin/jobs/results/cancel',
+            titles: {
+                running: '<span class="spinner" style="color:var(--brand)"></span> 🏁 Maç sonuçları çekiliyor',
+                done: '✅ Maç sonuçları tamamlandı',
+                cancelled: '⏹ Sonuç çekme durduruldu',
+                error: '⚠ Sonuç çekme hata verdi'
+            },
+            details: job => [
+                `Kaydedilen: ${job.updated}`,
+                job.missing ? `Bulunamayan: ${job.missing}` : null,
+                job.skipped ? `Atlanan (Zaten kayıtlı): ${job.skipped}` : null,
+                job.errors ? `Hata: ${job.errors}` : null
+            ],
+            finishMessage: job => job.status === 'done'
+                ? `Maç sonuçları tamamlandı: ${job.updated} maçın skoru kaydedildi${job.missing ? `, ${job.missing} maç için skor henüz açıklanmamış` : ''}.`
+                : job.status === 'cancelled' ? `Sonuç çekme durduruldu (${job.processed} / ${job.total}).` : `Sonuç çekme hata verdi: ${job.message}`
+        });
+
         async function startStatsJob(btn) {
             await withBusyButton(btn, 'Başlatılıyor', async () => {
                 try {
@@ -734,15 +841,16 @@
                 renderLeagues();
             } catch (err) {
                 document.getElementById('leaguesBody').innerHTML =
-                    `<tr><td class="empty-state text-error" colspan="10">Ligler yüklenemedi: ${esc(err.message)}</td></tr>`;
+                    `<tr><td class="empty-state text-error" colspan="11">Ligler yüklenemedi: ${esc(err.message)}</td></tr>`;
             }
         }
 
-        // ⭐ isabet: yüzde + (tutan / değerlendirilen). Az örnekte yanıltıcı olmasın diye örnek sayısı da gösterilir.
-        function bestBetAccuracy(l) {
-            if (!l.best_bet_total) return '<span class="muted">—</span>';
-            const cls = l.best_bet_accuracy >= 60 ? 'badge-success' : (l.best_bet_accuracy >= 45 ? 'badge-warning' : 'badge-error');
-            return `<span class="badge ${cls}">%${esc(l.best_bet_accuracy)}</span> <span class="cell-sub">${l.best_bet_correct}/${l.best_bet_total}</span>`;
+        // ⭐ / 2. tercih isabeti: yüzde + (tutan / değerlendirilen). Az örnekte yanıltıcı olmasın diye örnek sayısı da gösterilir.
+        function betAccuracy(l, key) {
+            const total = l[`${key}_total`], accuracy = l[`${key}_accuracy`];
+            if (!total) return '<span class="muted">—</span>';
+            const cls = accuracy >= 60 ? 'badge-success' : (accuracy >= 45 ? 'badge-warning' : 'badge-error');
+            return `<span class="badge ${cls}">%${esc(accuracy)}</span> <span class="cell-sub">${l[`${key}_correct`]}/${total}</span>`;
         }
 
         function renderLeagues() {
@@ -754,7 +862,7 @@
 
             const body = document.getElementById('leaguesBody');
             if (rows.length === 0) {
-                body.innerHTML = `<tr><td class="empty-state" colspan="10">Aramaya uygun lig bulunamadı.</td></tr>`;
+                body.innerHTML = `<tr><td class="empty-state" colspan="11">Aramaya uygun lig bulunamadı.</td></tr>`;
                 return;
             }
             body.innerHTML = rows.map(l => `
@@ -766,7 +874,8 @@
                     <td class="num"><strong>${l.unfinished_matches}</strong></td>
                     <td class="num">${l.analyzed_matches}</td>
                     <td class="num">${l.evaluated || '<span class="muted">—</span>'}</td>
-                    <td class="num">${bestBetAccuracy(l)}</td>
+                    <td class="num">${betAccuracy(l, 'best_bet')}</td>
+                    <td class="num">${betAccuracy(l, 'alt_bet')}</td>
                     <td class="center">
                         <label class="toggle" title="Gemini analiz izni">
                             <input type="checkbox" data-toggle-league="${l.id}" ${l.gemini_analysis ? 'checked' : ''} aria-label="${esc(l.name)} Gemini izni">
@@ -963,7 +1072,27 @@
             loadMatches();
             statsJob.load();
             predictionJob.load();
+            resultsJob.load();
             if (location.hash.startsWith('#admin')) routeFromHash();
+
+            // KPI kartlarına tıklayarak doğrudan görünümler arası geçiş
+            const kpiUnfinished = document.getElementById('kpiCardUnfinished');
+            if (kpiUnfinished) {
+                kpiUnfinished.addEventListener('click', () => {
+                    showTab('matches');
+                    setView('UNFINISHED');
+                    loadMatches();
+                });
+            }
+            const kpiCompleted2d = document.getElementById('kpiCardCompleted2d');
+            if (kpiCompleted2d) {
+                kpiCompleted2d.addEventListener('click', () => {
+                    showTab('matches');
+                    setView('COMPLETED_2DAYS');
+                    loadMatches();
+                });
+            }
+
             // Liste görünürken ve açık bir modal yokken sessizce yenile
             setInterval(() => {
                 if (!document.getElementById('tab-matches').hidden && !document.querySelector('.modal-backdrop')) {

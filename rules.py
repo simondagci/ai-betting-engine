@@ -4,7 +4,7 @@
 Futbol: Alt/Üst sınırı sabit 3 goldür, KG uygulanır.
 Basketbol: Alt/Üst ve KG yoktur; bunun yerine maç sonu toplam sayı tahmini yapılır.
 """
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 FOOTBALL = "FOOTBALL"
 BASKETBALL = "BASKETBALL"
@@ -61,8 +61,9 @@ def normalize_selection(selection: Optional[str]) -> str:
             text = f"{prefix} {text[len(prefix):]}"
     return text
 
-# ⭐ Değerli tercih (value bet) adayları: market anahtarı -> (oran tablosundaki market adı, {bülten seçeneği: gösterim etiketi}, ad)
+# ⭐ En güçlü tercih ve 2. tercih adayları: market anahtarı -> (oran tablosundaki market adı, {bülten seçeneği: gösterim etiketi}, ad)
 # Futbolda ALT / ÜST, 3 gol kuralı nedeniyle 3.5 baremine karşılık gelir (ÜST = 4+ gol).
+# Çifte Şans sadece 2. tercih adayıdır (⭐ en güçlü tercih, eskisi gibi Gemini'nin kendi tahmin marketlerinden seçilir).
 BET_OPTIONS = {
     "ft": ("Maç Sonucu", {"MS 1": "MS 1", "MS 0": "MS 0", "MS 2": "MS 2"}, "Maç Sonu"),
     "ht": ("İlk Yarı Sonucu", {"İY 1": "İY 1", "İY 0": "İY 0", "İY 2": "İY 2"}, "İlk Yarı"),
@@ -71,13 +72,17 @@ BET_OPTIONS = {
     "dc": ("Çifte Şans", {"1-X": "1-X", "1-2": "1-2", "X-2": "X-2"}, "Çifte Şans"),
 }
 BASKETBALL_BET_MARKETS = ("ft", "ht")
+BEST_BET_MARKETS = ("ft", "ht", "over_under", "kg")
 
-def bet_candidates(odds: List[Dict[str, Any]], sport_type: str = FOOTBALL, min_odds: float = 0.0) -> List[Dict[str, Any]]:
+def bet_candidates(odds: List[Dict[str, Any]], sport_type: str = FOOTBALL, min_odds: float = 0.0,
+                   markets: Optional[Sequence[str]] = None) -> List[Dict[str, Any]]:
     """
-    Kayıtlı oranlardan ⭐ değerli tercih adaylarını çıkarır: [{"market", "selection", "market_label", "odds"}].
-    Sadece oranı min_odds ve üstü olan seçenekler döner (basketbolda sadece MS ve İY).
+    Kayıtlı oranlardan tercih adaylarını çıkarır: [{"market", "selection", "market_label", "odds"}].
+    Sadece oranı min_odds ve üstü olan seçenekler döner; markets verilirse sadece o marketler (basketbolda sadece MS ve İY).
     """
-    markets = BASKETBALL_BET_MARKETS if is_basketball(sport_type) else tuple(BET_OPTIONS)
+    markets = tuple(markets or BET_OPTIONS)
+    if is_basketball(sport_type):
+        markets = tuple(k for k in markets if k in BASKETBALL_BET_MARKETS)
     by_market_option = {(o.get("market_name"), o.get("option_name")): o.get("odds_value") for o in odds}
     candidates = []
     for key in markets:
@@ -124,7 +129,7 @@ def evaluate_prediction(prediction: Dict[str, Any], result: Dict[str, Any],
     Bir tahmini gerçek maç sonucuyla karşılaştırır. Değerlendirilemeyen alanlar None döner
     (örn. ilk yarı skoru yoksa 'ht', basketbolda 'over_under' ve 'kg').
     Basketbolda 'total_diff': tahmini toplam sayı ile gerçek toplam arasındaki mutlak fark.
-    'best_bet': Gemini'nin en güçlü tercihi (best_bet_market) tuttu mu; tercih yoksa None.
+    'best_bet': Gemini'nin ⭐ en güçlü tercihi tuttu mu; 'alt_bet': 2. tercih (düşük oranlı ⭐ yerine) tuttu mu; tercih yoksa None.
     prediction: predicted_* alanları, result: ht_/ft_ home/away skor alanları.
     """
     ht_h, ht_a = result.get("ht_home_score"), result.get("ht_away_score")
@@ -151,6 +156,7 @@ def evaluate_prediction(prediction: Dict[str, Any], result: Dict[str, Any],
         "score": is_score_prediction_correct(ft_h, ft_a, prediction.get("predicted_score")),
         "total_diff": total_diff,
     }
-    # ⭐ değerli tercih, tahminden farklı bir seçim olabilir (örn. tahmin MS 1, ⭐ KG VAR); seçimin kendisi değerlendirilir
+    # Tercihler tahminden farklı bir seçim olabilir (örn. tahmin MS 1, 2. tercih KG VAR); seçimin kendisi değerlendirilir
     evaluation["best_bet"] = selection_won(prediction.get("best_bet_market"), prediction.get("best_bet_selection"), result)
+    evaluation["alt_bet"] = selection_won(prediction.get("alt_bet_market"), prediction.get("alt_bet_selection"), result)
     return evaluation

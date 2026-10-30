@@ -612,3 +612,5 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .field-grid, .form-grid { grid-template-columns: 1fr; }
     .page-title { font-size: 18px; }
 }
+/* 2. tercih: ⭐ tercihin oranı MIN_BEST_BET_ODDS altındaysa gösterilen, oranı eşik ve üstü alternatif */
+.best-bet.alt-bet { border-color: #b9d4f2; border-left-color: var(--brand, #0176d3); background: #f3f8fe; }

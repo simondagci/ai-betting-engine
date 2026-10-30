@@ -38,7 +38,7 @@ _PREDICTION_COLUMNS = """
     p.predicted_ht_result, p.predicted_ft_result, p.predicted_over_under_3,
     p.predicted_kg, p.predicted_score, p.confidence_score, p.ai_analysis_summary,
     p.predicted_total_points, p.best_bet_market, p.best_bet_selection, p.best_bet_confidence, p.best_bet_reason,
-    p.best_bet_odds
+    p.best_bet_odds, p.alt_bet_market, p.alt_bet_selection, p.alt_bet_confidence, p.alt_bet_odds
 """
 
 # Gemini'ye gönderilebilir mi: son maçlar (iki takım) ve H2H dolu olmalı (bkz. match_data.REQUIRED_SECTIONS)
@@ -278,9 +278,12 @@ def init_db(db_path: str = DB_FILE) -> None:
         # Basketbol: Gemini'nin maç sonu toplam sayı tahmini (uzatmalar dahil)
         _ensure_column(cursor, "predictions", "predicted_total_points", "INTEGER")
         # Gemini'nin en güçlü tercihi (⭐): market anahtarı (ft / ht / over_under / kg), seçim, güven ve gerekçe
-        # best_bet_odds: değerli tercihin tahmin anındaki bülten oranı
+        # best_bet_odds: tercihin tahmin anındaki bülten oranı
+        # alt_bet_*: ⭐ tercihin oranı MIN_BEST_BET_ODDS altındaysa, oranı eşik ve üstü seçenekler arasından 2. tercih
         for column, ddl in (("best_bet_market", "TEXT"), ("best_bet_selection", "TEXT"),
-                            ("best_bet_confidence", "INTEGER"), ("best_bet_reason", "TEXT"), ("best_bet_odds", "REAL")):
+                            ("best_bet_confidence", "INTEGER"), ("best_bet_reason", "TEXT"), ("best_bet_odds", "REAL"),
+                            ("alt_bet_market", "TEXT"), ("alt_bet_selection", "TEXT"),
+                            ("alt_bet_confidence", "INTEGER"), ("alt_bet_odds", "REAL")):
             _ensure_column(cursor, "predictions", column, ddl)
 
         # Maç Sonuçları Tablosu (Başarı Oranı Takibi İçin)
@@ -425,7 +428,8 @@ def get_leagues(conn: sqlite3.Connection, query: str = "", only_enabled: bool = 
 def get_league_prediction_stats(conn: sqlite3.Connection) -> Dict[int, Dict[str, Any]]:
     """
     Lig bazında Gemini başarısı (sonucu girilmiş maçların SON tahmini üzerinden):
-    {league_id: {"evaluated", "best_bet_total", "best_bet_correct", "best_bet_accuracy", "ft_correct", "ft_accuracy"}}
+    {league_id: {"evaluated", "best_bet_total", "best_bet_correct", "best_bet_accuracy",
+                 "alt_bet_total", "alt_bet_correct", "alt_bet_accuracy", "ft_correct", "ft_accuracy"}}
     """
     rows = conn.execute(f"""
         SELECT m.league_id, m.sport_type, {_PREDICTION_COLUMNS},
@@ -440,14 +444,17 @@ def get_league_prediction_stats(conn: sqlite3.Connection) -> Dict[int, Dict[str,
     for r in rows:
         row = dict(r)
         evaluation = rules.evaluate_prediction(row, row, row["sport_type"])
-        s = stats.setdefault(row["league_id"], {"evaluated": 0, "best_bet_total": 0, "best_bet_correct": 0, "ft_correct": 0})
+        s = stats.setdefault(row["league_id"], {"evaluated": 0, "best_bet_total": 0, "best_bet_correct": 0,
+                                                "alt_bet_total": 0, "alt_bet_correct": 0, "ft_correct": 0})
         s["evaluated"] += 1
         s["ft_correct"] += bool(evaluation["ft"])
-        if evaluation["best_bet"] is not None:
-            s["best_bet_total"] += 1
-            s["best_bet_correct"] += evaluation["best_bet"]
+        for key in ("best_bet", "alt_bet"):
+            if evaluation[key] is not None:
+                s[f"{key}_total"] += 1
+                s[f"{key}_correct"] += evaluation[key]
     for s in stats.values():
-        s["best_bet_accuracy"] = round(s["best_bet_correct"] / s["best_bet_total"] * 100, 1) if s["best_bet_total"] else None
+        for key in ("best_bet", "alt_bet"):
+            s[f"{key}_accuracy"] = round(s[f"{key}_correct"] / s[f"{key}_total"] * 100, 1) if s[f"{key}_total"] else None
         s["ft_accuracy"] = round(s["ft_correct"] / s["evaluated"] * 100, 1) if s["evaluated"] else None
     return stats
 
@@ -470,7 +477,8 @@ def get_leagues_admin(conn: sqlite3.Connection, query: str = "") -> List[Dict[st
 
     sql += " GROUP BY l.id ORDER BY unfinished_matches DESC, total_matches DESC, l.name ASC"
     prediction_stats = get_league_prediction_stats(conn)
-    empty_stats = {"evaluated": 0, "best_bet_total": 0, "best_bet_correct": 0, "best_bet_accuracy": None, "ft_accuracy": None}
+    empty_stats = {"evaluated": 0, "best_bet_total": 0, "best_bet_correct": 0, "best_bet_accuracy": None,
+                   "alt_bet_total": 0, "alt_bet_correct": 0, "alt_bet_accuracy": None, "ft_accuracy": None}
     return [
         {
             "id": r["id"],
@@ -706,12 +714,14 @@ def save_match_stats(conn: sqlite3.Connection, match_id: int, h2h_data: Any, hom
 
 def save_prediction(conn: sqlite3.Connection, match_id: int, prediction_data: Dict[str, Any]) -> int:
     best_bet = prediction_data.get("best_bet") or {}
+    alt_bet = prediction_data.get("alt_bet") or {}
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO predictions (match_id, predicted_ht_result, predicted_ft_result, predicted_over_under_3, predicted_kg, predicted_score,
                                  confidence_score, ai_analysis_summary, predicted_total_points,
-                                 best_bet_market, best_bet_selection, best_bet_confidence, best_bet_reason, best_bet_odds)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 best_bet_market, best_bet_selection, best_bet_confidence, best_bet_reason, best_bet_odds,
+                                 alt_bet_market, alt_bet_selection, alt_bet_confidence, alt_bet_odds)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         match_id,
         prediction_data.get("predicted_ht_result"),
@@ -726,7 +736,11 @@ def save_prediction(conn: sqlite3.Connection, match_id: int, prediction_data: Di
         best_bet.get("selection"),
         best_bet.get("confidence"),
         best_bet.get("reason"),
-        best_bet.get("odds")
+        best_bet.get("odds"),
+        alt_bet.get("market"),
+        alt_bet.get("selection"),
+        alt_bet.get("confidence"),
+        alt_bet.get("odds")
     ))
     prediction_id = cursor.lastrowid
     cursor.execute("UPDATE matches SET status = 'ANALYZED' WHERE id = ? AND status != 'COMPLETED'", (match_id,))
@@ -802,8 +816,10 @@ def get_matches_awaiting_results(conn: sqlite3.Connection, sport_type: str = "FO
     Her kayıtta sonuç servisinin beklediği Türkiye tarihi ('result_date', YYYY-MM-DD) bulunur.
     """
     rows = conn.execute("""
-        SELECT m.id, m.code, m.match_date, m.match_time
+        SELECT m.id, m.code, m.match_date, m.match_time, ht.name as home_team, at.name as away_team
         FROM matches m
+        JOIN teams ht ON m.home_team_id = ht.id
+        JOIN teams at ON m.away_team_id = at.id
         LEFT JOIN results r ON r.match_id = m.id
         WHERE m.match_completed = 1 AND r.id IS NULL AND m.sport_type = ?
     """, (sport_type,)).fetchall()
@@ -924,11 +940,13 @@ def get_completed_matches(
         if m.get("ft_home_score") is not None and m.get("predicted_ft_result"):
             evaluation = rules.evaluate_prediction(m, m, m["sport_type"])
             m["is_prediction_correct"] = evaluation["ft"]
-            # Gemini'nin en güçlü tercihi (⭐) tuttu mu
+            # Gemini'nin en güçlü tercihi (⭐) ve 2. tercihi tuttu mu
             m["best_bet_correct"] = evaluation["best_bet"]
+            m["alt_bet_correct"] = evaluation["alt_bet"]
         else:
             m["is_prediction_correct"] = None
             m["best_bet_correct"] = None
+            m["alt_bet_correct"] = None
 
         filtered_matches.append(m)
 
@@ -996,6 +1014,10 @@ def get_match_predictions(conn: sqlite3.Connection, match_id: int) -> List[Dict[
             "confidence": prediction["best_bet_confidence"], "reason": prediction["best_bet_reason"],
             "odds": prediction["best_bet_odds"] or rules.selection_odds(odds, prediction["best_bet_market"], prediction["best_bet_selection"])
         } if prediction["best_bet_market"] else None)
+        prediction["alt_bet"] = ({
+            "market": prediction["alt_bet_market"], "selection": prediction["alt_bet_selection"],
+            "confidence": prediction["alt_bet_confidence"], "odds": prediction["alt_bet_odds"],
+        } if prediction["alt_bet_market"] else None)
         predictions.append(prediction)
     return predictions
 
@@ -1037,14 +1059,14 @@ def calculate_prediction_accuracy(conn: sqlite3.Connection) -> Dict[str, Any]:
         SELECT
             m.sport_type,
             p.predicted_ht_result, p.predicted_ft_result, p.predicted_over_under_3, p.predicted_kg, p.predicted_score,
-            p.predicted_total_points, p.best_bet_market, p.best_bet_selection,
+            p.predicted_total_points, p.best_bet_market, p.best_bet_selection, p.alt_bet_market, p.alt_bet_selection,
             r.ht_home_score, r.ht_away_score, r.ft_home_score, r.ft_away_score, r.is_over_3_goals, r.is_kg_var
         FROM predictions p
         JOIN results r ON p.match_id = r.match_id
         JOIN matches m ON m.id = p.match_id
     """).fetchall()
 
-    metrics = ("ht", "ft", "over_under", "kg", "score", "best_bet")
+    metrics = ("ht", "ft", "over_under", "kg", "score", "best_bet", "alt_bet")
     correct = {k: 0 for k in metrics}
     evaluated = {k: 0 for k in metrics}
 
@@ -1076,6 +1098,7 @@ def calculate_prediction_accuracy(conn: sqlite3.Connection) -> Dict[str, Any]:
         "kg_correct": correct["kg"], "kg_total": evaluated["kg"], "kg_accuracy": pct("kg"),
         "score_correct": correct["score"], "score_total": evaluated["score"], "score_accuracy": pct("score"),
         "best_bet_correct": correct["best_bet"], "best_bet_total": evaluated["best_bet"], "best_bet_accuracy": pct("best_bet"),
+        "alt_bet_correct": correct["alt_bet"], "alt_bet_total": evaluated["alt_bet"], "alt_bet_accuracy": pct("alt_bet"),
         "overall_accuracy": round(overall, 1),
         "total_points_evaluated": len(total_diffs),
         "total_points_avg_diff": round(sum(total_diffs) / len(total_diffs), 1) if total_diffs else None

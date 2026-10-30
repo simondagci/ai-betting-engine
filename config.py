@@ -36,7 +36,8 @@ BATCH_REQUEST_DELAY = float(os.getenv("BATCH_REQUEST_DELAY", "1.5"))
 # Artırmak hızlandırır ama Gemini dakika başı istek limitine (429) takılma riskini artırır.
 GEMINI_PARALLEL_REQUESTS = max(1, int(os.getenv("GEMINI_PARALLEL_REQUESTS", "3")))
 
-# ⭐ Değerli tercih için minimum bülten oranı: bunun altındaki seçenekler Gemini'ye aday olarak gönderilmez.
+# 2. tercih eşiği: ⭐ en güçlü tercihin oranı bunun altındaysa Gemini, oranı bu değer ve üstü seçenekler arasından
+# bir 2. tercih (alt_bet) de verir.
 MIN_BEST_BET_ODDS = float(os.getenv("MIN_BEST_BET_ODDS", "1.30"))
 
 # Tek bir Gemini isteği için zaman aşımı (saniye). İnternet koparsa / bilgisayar uyursa istek sonsuza kadar beklemez.
