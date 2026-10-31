@@ -1094,11 +1094,13 @@ def get_completed_matches(
         if m.get("ft_home_score") is not None and m.get("predicted_ft_result"):
             evaluation = rules.evaluate_prediction(m, m, m["sport_type"])
             m["is_prediction_correct"] = evaluation["ft"]
+            m["ht_correct"] = evaluation["ht"]
             # Gemini'nin en güçlü tercihi (⭐) ve 2. tercihi tuttu mu
             m["best_bet_correct"] = evaluation["best_bet"]
             m["alt_bet_correct"] = evaluation["alt_bet"]
         else:
             m["is_prediction_correct"] = None
+            m["ht_correct"] = None
             m["best_bet_correct"] = None
             m["alt_bet_correct"] = None
 

@@ -96,7 +96,8 @@
                         ${highlight('Türkiye Saati', `${esc(m.tr_date)} ${esc(m.tr_time)}`)}
                         ${highlight('Durum', statusBadge({ ...m, predicted_score: latest && latest.predicted_score }))}
                         ${highlight('Lig Gemini İzni', m.league_gemini_analysis ? '<span class="badge badge-success">Açık</span>' : '<span class="badge">Kapalı</span>')}
-                        ${ctx.result ? highlight('Skor', `<span class="score">${ctx.result.ft_home_score} - ${ctx.result.ft_away_score}</span>`) : ''}
+                        ${ctx.result ? highlight('Skor (MS / İY)', `<span class="score">${ctx.result.ft_home_score} - ${ctx.result.ft_away_score}</span> <span class="cell-sub" style="margin-left:4px; font-weight:600;">(İY ${ctx.result.ht_home_score ?? '—'} - ${ctx.result.ht_away_score ?? '—'})</span>`) : ''}
+                        ${latest ? highlight('Tahmin (MS / İY)', `<strong>${esc(latest.predicted_ft_result || '—')}</strong> · ${esc(latest.predicted_score || '—')} <span class="cell-sub" style="margin-left:4px; font-weight:600;">(İY: ${esc(latest.predicted_ht_result || '—')})</span>`) : ''}
                     </div>
                 </div>
 
@@ -304,10 +305,11 @@
             : correct === false ? ' <span class="text-error" title="Tutmadı">✗</span>' : '';
 
         // isBest: Gemini'nin en güçlü tercihi (⭐) bu kutudaki tahminin aynısıysa kutu vurgulanır
-        function predictionCell(label, value, correct, isBest = false) {
+        function predictionCell(label, value, correct, isBest = false, actualText = null) {
             const star = isBest ? '<span class="best-star" title="Gemini\'nin en güçlü tercihi">⭐</span>' : '';
+            const sub = actualText ? `<div class="cell-sub" style="margin-top:2px; font-weight:600; color:var(--brand);">${esc(actualText)}</div>` : '';
             return `<div class="prediction-cell ${isBest ? 'best' : ''}">${star}<div class="label">${esc(label)}</div>
-                <div class="value">${esc(value || '—')}${resultMark(correct)}</div></div>`;
+                <div class="value">${esc(value || '—')}${resultMark(correct)}</div>${sub}</div>`;
         }
 
         function betVerdict(won, confidence) {
@@ -366,6 +368,11 @@
                     </div></div>`;
             }
             const ev = p.evaluation || {};
+            const r = ctx.result;
+            const actualHtText = r && r.ht_home_score !== null ? `Gerçek İY: ${r.ht_home_score}-${r.ht_away_score}` : null;
+            const actualFtText = r && r.ft_home_score !== null ? `Gerçek MS: ${r.ft_home_score}-${r.ft_away_score}` : null;
+            const actualScoreText = r && r.ft_home_score !== null ? `Gerçek: ${r.ft_home_score}-${r.ft_away_score}` : null;
+
             // ⭐ en güçlü tercih tahminle aynıysa ilgili kutu vurgulanır (farklı bir seçim de olabilir, örn. tahmin MS 1, ⭐ KG VAR)
             const predictedByMarket = { ft: p.predicted_ft_result, ht: p.predicted_ht_result, over_under: p.predicted_over_under_3, kg: p.predicted_kg };
             const bestMarket = p.best_bet && predictedByMarket[p.best_bet.market] === p.best_bet.selection ? p.best_bet.market : null;
@@ -381,10 +388,10 @@
                 </div>
                 <div class="card-body">
                     <div class="prediction-grid">
-                        ${predictionCell('Maç Sonu', p.predicted_ft_result, ev.ft, bestMarket === 'ft')}
-                        ${predictionCell('İlk Yarı', p.predicted_ht_result, ev.ht, bestMarket === 'ht')}
+                        ${predictionCell('Maç Sonu', p.predicted_ft_result, ev.ft, bestMarket === 'ft', actualFtText)}
+                        ${predictionCell('İlk Yarı', p.predicted_ht_result, ev.ht, bestMarket === 'ht', actualHtText)}
                         ${sportCells}
-                        ${predictionCell('Tahmini Skor', p.predicted_score, ev.score)}
+                        ${predictionCell('Tahmini Skor', p.predicted_score, ev.score, false, actualScoreText)}
                         ${predictionCell('Güven', p.confidence_score !== null ? `%${p.confidence_score}` : null)}
                     </div>
                     ${p.ai_analysis_summary ? `<div class="analysis-text">${esc(p.ai_analysis_summary)}</div>` : ''}
@@ -396,8 +403,17 @@
         function renderResultCard() {
             const r = ctx.result;
             const body = r
-                ? `<div class="result-score">${r.ft_home_score} - ${r.ft_away_score}</div>
-                   <div class="result-sub">İlk Yarı: ${r.ht_home_score ?? '—'} - ${r.ht_away_score ?? '—'}</div>
+                ? `<div style="display:flex; align-items:center; justify-content:space-around; background:var(--bg-subtle, #f8fafc); padding:12px; border-radius:8px; margin-bottom:12px; border:1px solid var(--border-color, #e2e8f0);">
+                       <div style="text-align:center;">
+                           <div style="font-size:11px; text-transform:uppercase; font-weight:700; color:var(--text-muted); margin-bottom:2px;">Maç Sonu (FT)</div>
+                           <div class="result-score" style="font-size:28px; font-weight:900; color:var(--brand);">${r.ft_home_score} - ${r.ft_away_score}</div>
+                       </div>
+                       <div style="font-size:24px; color:var(--border-color, #cbd5e1); font-weight:300;">|</div>
+                       <div style="text-align:center;">
+                           <div style="font-size:11px; text-transform:uppercase; font-weight:700; color:var(--text-muted); margin-bottom:2px;">İlk Yarı (HT)</div>
+                           <div style="font-size:24px; font-weight:800; color:#0f172a;">${r.ht_home_score ?? '—'} - ${r.ht_away_score ?? '—'}</div>
+                       </div>
+                   </div>
                    <div class="result-badges">${isBasketball(ctx.match.sport_type)
                        ? `<span class="badge badge-brand">Toplam ${r.ft_home_score + r.ft_away_score} sayı</span>`
                        : `<span class="badge ${r.is_over_3_goals ? 'badge-purple' : ''}">3 Gol ${r.is_over_3_goals ? 'ÜST' : 'ALT'}</span>

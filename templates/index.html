@@ -747,10 +747,13 @@
                     const msBadge = m.is_prediction_correct === true
                         ? '<span class="badge badge-success" title="Maç Sonu Tahmini Tuttu">MS ✓</span>'
                         : (m.is_prediction_correct === false ? '<span class="badge badge-error" title="Maç Sonu Tahmini Tutmadı">MS ✗</span>' : '');
+                    const htBadge = m.ht_correct === true
+                        ? '<span class="badge badge-success" title="İlk Yarı Tahmini Tuttu">İY ✓</span>'
+                        : (m.ht_correct === false ? '<span class="badge badge-error" title="İlk Yarı Tahmini Tutmadı">İY ✗</span>' : '');
                     const bestBadge = m.best_bet_correct === true
                         ? '<span class="badge badge-gold" title="Önerilen Tercih Tuttu">⭐ ✓</span>'
                         : (m.best_bet_correct === false ? '<span class="badge badge-error" title="Önerilen Tercih Tutmadı">⭐ ✗</span>' : '');
-                    evalCell = `<div style="display:flex; gap:4px; flex-wrap:nowrap; white-space:nowrap;">${msBadge} ${bestBadge}</div>`;
+                    evalCell = `<div style="display:flex; gap:4px; flex-wrap:nowrap; white-space:nowrap;">${msBadge} ${htBadge} ${bestBadge}</div>`;
                 }
 
                 return `
