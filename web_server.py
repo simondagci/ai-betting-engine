@@ -488,6 +488,47 @@ def api_analyze_league_matches(league_id: int):
         "errors": errors
     })
 
+@app.route("/api/leagues/accuracy")
+def api_get_leagues_accuracy():
+    """Liglere göre Tercih 1 (⭐) ve 2. Tercih (alt_bet) tutma oranlarını ve özet metrikleri döner."""
+    with database.db_session() as conn:
+        leagues = database.get_leagues_admin(conn)
+        accuracy_overall = database.calculate_prediction_accuracy(conn)
+
+    # Değerlendirilen maç sayısı > 0 olan ligler
+    evaluated_leagues = [l for l in leagues if l.get("evaluated", 0) > 0]
+    evaluated_leagues.sort(
+        key=lambda x: (
+            x["best_bet_accuracy"] if x["best_bet_accuracy"] is not None else -1,
+            x.get("best_bet_total", 0)
+        ),
+        reverse=True
+    )
+
+    top_league = evaluated_leagues[0] if evaluated_leagues else None
+
+    return jsonify({
+        "success": True,
+        "summary": {
+            "total_evaluated_matches": accuracy_overall["total_evaluated"],
+            "best_bet_correct": accuracy_overall["best_bet_correct"],
+            "best_bet_total": accuracy_overall["best_bet_total"],
+            "best_bet_accuracy": accuracy_overall["best_bet_accuracy"],
+            "alt_bet_correct": accuracy_overall["alt_bet_correct"],
+            "alt_bet_total": accuracy_overall["alt_bet_total"],
+            "alt_bet_accuracy": accuracy_overall["alt_bet_accuracy"],
+            "evaluated_leagues_count": len(evaluated_leagues),
+            "total_leagues_count": len(leagues),
+            "top_league": {
+                "name": top_league["name"],
+                "accuracy": top_league["best_bet_accuracy"],
+                "total": top_league["best_bet_total"],
+                "correct": top_league["best_bet_correct"]
+            } if top_league else None
+        },
+        "leagues": leagues
+    })
+
 @app.route("/api/stats")
 def api_stats():
     """Genel sistem ve veritabanı istatistiklerini döner."""

@@ -38,7 +38,7 @@ API davranışı değişirse `mdFiles/APIs/iddaa/README.md` (veya Nesine için `
 | `gemini_engine.py` | Prompt oluşturma (`build_prompt`), `MatchPrediction` Pydantic şeması, Gemini çağrısı + retry/fallback |
 | `app.py` | Terminal menüsü — `MENU_ITEMS` listesi (etiket, fonksiyon) + `main_menu()` |
 | `web_server.py` | Flask dashboard + `/api/...` JSON endpoint'leri (bülten / sonuç / toplu istatistik senkronizasyonu, tek maç istatistik, skor girişi dahil) |
-| `templates/index.html` | Liste görünümü (sıralanabilir maç tablosu, `?view=` ile görünüm seçimi) + Lig Yönetimi (`#admin`) sekmesi |
+| `templates/index.html` | Liste görünümü (sıralanabilir maç tablosu, `?view=`), Kupon sekmesi (`#coupon`), Tercih İsabetleri sekmesi (`#accuracy`), sıralanabilir Lig Yönetimi (`#admin`) |
 | `templates/match_detail.html` | `/matches/<id>` maç kayıt sayfası: highlights, Quick Actions, İstatistikler/Oranlar/Detaylar sekmeleri |
 | `static/app.css`, `static/common.js` | Ortak açık tema (Lightning esinli) ve JS yardımcıları (`esc`, `api`, `showToast`, `openModal`) |
 | `main.py` | Sadece `app.main_menu()` çağırır |

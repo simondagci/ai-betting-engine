@@ -1556,5 +1556,17 @@ class TestSourceSwitchAndSync(unittest.TestCase):
         self.client.delete(f"/api/coupons/{coupon_id}")
         self.assertTrue(generate(True)["success"])
 
+    def test_leagues_accuracy_endpoint(self):
+        res = self.client.get("/api/leagues/accuracy")
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data["success"])
+        self.assertIn("summary", data)
+        self.assertIn("leagues", data)
+        summary = data["summary"]
+        for key in ("best_bet_accuracy", "alt_bet_accuracy", "best_bet_total", "alt_bet_total", "total_evaluated_matches"):
+            self.assertIn(key, summary)
+        self.assertIsInstance(data["leagues"], list)
+
 if __name__ == "__main__":
     unittest.main()

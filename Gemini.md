@@ -42,7 +42,7 @@ python3 -m unittest test_app -v
 | `gemini_engine.py` | Prompt oluşturma (`build_prompt`, `_build_basketball_prompt`), Pydantic şemalar (`MatchPrediction`, `BasketballPrediction`), Gemini çağrısı + retry/fallback + zaman aşımı, `finalize_best_bet` |
 | `app.py` | Terminal menüsü — `MENU_ITEMS` listesi (etiket, fonksiyon) + `main_menu()` |
 | `web_server.py` | Flask dashboard + `/api/...` JSON endpoint'leri (bkz. §7) |
-| `templates/index.html` | Maç listesi (sıralanabilir tablo, `?view=`), iş ilerleme çubukları, Lig Yönetimi (`#admin`: Ligler & Bülten, Ayarlar) |
+| `templates/index.html` | Maç listesi (sıralanabilir tablo, `?view=`), Kupon sekmesi (`#coupon`), Tercih İsabetleri sekmesi (`#accuracy`), sıralanabilir Lig Yönetimi (`#admin`: Ligler & Bülten, Ayarlar) |
 | `templates/match_detail.html` | `/matches/<id>`: highlights, Quick Actions, İstatistikler / Oranlar / Detaylar sekmeleri, ⭐ en güçlü tercih ve 2. tercih kutuları |
 | `static/app.css`, `static/common.js` | Ortak açık tema (Salesforce Lightning esinli) ve JS yardımcıları (`esc`, `api`, `showToast`, `openModal`, `requestPrediction`, `pickMainOdds`) |
 | `main.py` | Sadece `app.main_menu()` çağırır |
@@ -199,6 +199,7 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
 | GET / POST | `/api/admin/jobs/results`, `/api/admin/jobs/results/cancel` | Sonuç çekme işi ilerlemesi / iptal |
 | GET / POST | `/api/admin/jobs/predictions`, `.../start`, `.../cancel` | Toplu analiz ilerlemesi (uygun maç sayısıyla) / başlat / iptal |
 | GET / POST | `/api/admin/leagues`, `/api/admin/leagues/<id>/toggle`, `/api/admin/leagues/toggle_all` | Lig listesi (⭐ isabet dahil) ve izinleri |
+| GET | `/api/leagues/accuracy` | Lig bazında Tercih 1 ve 2. Tercih başarı oranları ve özet metrikler |
 | POST | `/api/admin/leagues/<id>/analyze` | Lig maçlarını analiz et (istatistiği eksikler `skipped`) |
 | GET | `/api/stats` | Tahmin doğruluk raporu |
 | GET / POST | `/api/admin/settings`, `/api/admin/settings/gemini` | Ayarlar (Gemini anahtarı, kupon oran kuralları) / Gemini genel anahtarı |

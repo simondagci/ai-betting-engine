@@ -15,6 +15,7 @@
         <nav class="global-nav" aria-label="Ana menü">
             <button class="global-nav-item active" data-tab="matches" type="button">Maçlar</button>
             <button class="global-nav-item" data-tab="coupon" type="button">🎟️ Kupon</button>
+            <button class="global-nav-item" data-tab="accuracy" type="button">📊 Tercih İsabetleri</button>
             <button class="global-nav-item" data-tab="admin" type="button">Lig Yönetimi</button>
         </nav>
         <div class="header-meta">Saatler: 🇩🇪 Europe/Berlin</div>
@@ -235,6 +236,89 @@
             </div>
         </section>
 
+        <!-- ==================== TERCİH İSABETLERİ (LİG BAŞARI ORANLARI) ==================== -->
+        <section id="tab-accuracy" hidden>
+            <!-- KPI Kartları -->
+            <div class="kpi-row" style="margin-bottom:16px;">
+                <div class="card kpi-card">
+                    <div class="kpi-label">⭐ Tercih 1 (En Güçlü Tercih) İsabeti</div>
+                    <div class="kpi-value text-brand" id="accKpiBestBetPct">—</div>
+                    <div class="kpi-sub" id="accKpiBestBetSub">Yükleniyor...</div>
+                </div>
+                <div class="card kpi-card">
+                    <div class="kpi-label">🎯 2. Tercih (alt_bet) İsabeti</div>
+                    <div class="kpi-value" id="accKpiAltBetPct" style="color:#0284c7;">—</div>
+                    <div class="kpi-sub" id="accKpiAltBetSub">Yükleniyor...</div>
+                </div>
+                <div class="card kpi-card">
+                    <div class="kpi-label">🏆 En Başarılı Lig</div>
+                    <div class="kpi-value" id="accKpiTopLeague" style="font-size:18px; line-height:1.3; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">—</div>
+                    <div class="kpi-sub" id="accKpiTopLeagueSub">—</div>
+                </div>
+                <div class="card kpi-card">
+                    <div class="kpi-label">Sonuçlanan Lig / Maç</div>
+                    <div class="kpi-value" id="accKpiCounts">—</div>
+                    <div class="kpi-sub" id="accKpiCountsSub">Değerlendirilen veriler</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="page-header" style="border-bottom:none; margin-bottom:0; padding-bottom:8px;">
+                    <div class="page-header-top">
+                        <div class="page-header-title-area">
+                            <div class="object-icon" style="background:#fef3c7; color:#d97706;">📊</div>
+                            <div>
+                                <div class="object-label">Performans Analizi</div>
+                                <h2 class="page-title">Liglere Göre Tercih Başarı Oranları</h2>
+                            </div>
+                        </div>
+                        <button class="btn btn-sm" id="btnRefreshAccuracy" type="button">↻ Yenile</button>
+                    </div>
+                </div>
+                <p class="muted" style="margin:4px 0 16px 0; font-size:13px;">
+                    Yapay zekanın maçlar için belirlediği Tercih 1 (⭐ en güçlü tercih) ve 2. Tercih (alt_bet) seçimlerinin lig bazındaki tutma ve gerçekleşme oranları.
+                </p>
+
+                <!-- Filtre ve Arama Araç Çubuğu -->
+                <div class="toolbar" style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                    <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; flex:1; max-width:600px;">
+                        <input class="input input-search" id="accuracySearch" type="search" placeholder="Lig adı ara..." aria-label="Lig ara" style="flex:1; min-width:200px;">
+                        <select class="input" id="accuracySportFilter" style="width:140px;">
+                            <option value="ALL" selected>Tüm Sporlar</option>
+                            <option value="FOOTBALL">⚽ Futbol</option>
+                            <option value="BASKETBALL">🏀 Basketbol</option>
+                        </select>
+                    </div>
+                    <label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; cursor:pointer;">
+                        <input type="checkbox" id="accuracyOnlyEvaluated" checked style="width:18px; height:18px; cursor:pointer;">
+                        <span>Sadece Sonucu Olan Ligleri Göster</span>
+                    </label>
+                </div>
+
+                <!-- Veri Tablosu -->
+                <div class="table-wrap">
+                    <table class="data-table">
+                        <thead id="accuracyHead">
+                            <tr>
+                                <th class="sortable" data-sort="name">Lig / Turnuva</th>
+                                <th class="sortable" data-sort="sport_type">Spor</th>
+                                <th class="num sortable" data-sort="evaluated" title="Sonucu girilmiş ve tahmini olan maç sayısı">Sonuçlanan</th>
+                                <th class="sortable" data-sort="best_bet_accuracy" style="min-width:200px;" title="Tercih 1 (⭐ En Güçlü Tercih) tutma oranı">⭐ Tercih 1 İsabeti</th>
+                                <th class="sortable" data-sort="alt_bet_accuracy" style="min-width:180px;" title="2. Tercih tutma oranı">🎯 2. Tercih İsabeti</th>
+                                <th class="center sortable" data-sort="best_bet_accuracy">Başarı Seviyesi</th>
+                                <th class="center">Kupon Ağırlığı</th>
+                                <th class="center sortable" data-sort="gemini_analysis">Gemini İzni</th>
+                            </tr>
+                        </thead>
+                        <tbody id="accuracyBody">
+                            <tr><td class="empty-state" colspan="8">Yükleniyor...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="list-footer" id="accuracyFooter"></div>
+            </div>
+        </section>
+
         <!-- ==================== LİG YÖNETİMİ (ADMIN) ==================== -->
         <section id="tab-admin" hidden>
           <div class="setup-layout">
@@ -301,18 +385,18 @@
                 </div>
                 <div class="table-wrap">
                     <table class="data-table">
-                        <thead>
+                        <thead id="leaguesHead">
                             <tr>
-                                <th>ID</th>
-                                <th>Lig / Turnuva</th>
-                                <th>Spor</th>
-                                <th class="num">Toplam Maç</th>
-                                <th class="num">Bitmemiş</th>
-                                <th class="num">Analizli</th>
-                                <th class="num" title="Sonucu girilmiş ve Gemini tahmini olan maç sayısı">Değerlendirilen</th>
-                                <th class="num" title="Gemini'nin en güçlü tercihinin (⭐) tutma oranı">⭐ İsabet</th>
-                                <th class="num" title="2. tercihin (⭐ oranı düşükken önerilen) tutma oranı">2. Tercih İsabet</th>
-                                <th class="center">Gemini İzni</th>
+                                <th class="sortable" data-sort="id">ID</th>
+                                <th class="sortable" data-sort="name">Lig / Turnuva</th>
+                                <th class="sortable" data-sort="sport_type">Spor</th>
+                                <th class="num sortable" data-sort="total_matches">Toplam Maç</th>
+                                <th class="num sortable" data-sort="unfinished_matches">Bitmemiş</th>
+                                <th class="num sortable" data-sort="analyzed_matches">Analizli</th>
+                                <th class="num sortable" data-sort="evaluated" title="Sonucu girilmiş ve Gemini tahmini olan maç sayısı">Değerlendirilen</th>
+                                <th class="num sortable" data-sort="best_bet_accuracy" title="Gemini'nin en güçlü tercihinin (⭐) tutma oranı">⭐ İsabet</th>
+                                <th class="num sortable" data-sort="alt_bet_accuracy" title="2. tercihin (⭐ oranı düşükken önerilen) tutma oranı">2. Tercih İsabet</th>
+                                <th class="center sortable" data-sort="gemini_analysis">Gemini İzni</th>
                                 <th></th>
                             </tr>
                         </thead>
@@ -408,18 +492,22 @@
         const state = {
             matches: [],
             leagues: [],
+            accuracyLeagues: [],
             view: 'UNFINISHED',
             subFilter: 'ALL',
             sort: { key: null, dir: 1 },
+            leagueSort: { key: 'unfinished_matches', dir: -1 },
+            accuracySort: { key: 'best_bet_accuracy', dir: -1 },
             geminiEnabled: null   // /api/stats yüklenene kadar bilinmiyor
         };
 
         // ==================== TABS ====================
-        // URL hash: '' (Maçlar), '#coupon' (Kupon Motoru), '#admin' (Ligler & Bülten), '#admin/settings' (Ayarlar)
+        // URL hash: '' (Maçlar), '#coupon' (Kupon Motoru), '#accuracy' (Tercih İsabetleri), '#admin' (Ligler & Bülten), '#admin/settings' (Ayarlar)
         function showTab(tab, adminPage = 'leagues') {
             document.querySelectorAll('.global-nav-item').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
             document.getElementById('tab-matches').hidden = tab !== 'matches';
             document.getElementById('tab-coupon').hidden = tab !== 'coupon';
+            document.getElementById('tab-accuracy').hidden = tab !== 'accuracy';
             document.getElementById('tab-admin').hidden = tab !== 'admin';
 
             let hash = '';
@@ -433,6 +521,9 @@
                 hash = '#coupon';
                 loadCouponRules();
                 loadPlayedCoupons();
+            } else if (tab === 'accuracy') {
+                hash = '#accuracy';
+                loadAccuracy();
             }
             history.replaceState(null, '', location.pathname + location.search + hash);
         }
@@ -441,6 +532,7 @@
             const [tab, page] = location.hash.replace('#', '').split('/');
             if (tab === 'admin') showTab('admin', page === 'settings' ? 'settings' : 'leagues');
             else if (tab === 'coupon') showTab('coupon');
+            else if (tab === 'accuracy') showTab('accuracy');
             else showTab('matches');
         }
 
@@ -1045,7 +1137,29 @@
 
         function renderLeagues() {
             const q = document.getElementById('leagueSearch').value.toLowerCase().trim();
-            const rows = state.leagues.filter(l => l.name.toLowerCase().includes(q));
+            let rows = state.leagues.filter(l => l.name.toLowerCase().includes(q));
+
+            // Sütun sıralaması
+            const { key, dir } = state.leagueSort || { key: 'unfinished_matches', dir: -1 };
+            if (key) {
+                rows.sort((a, b) => {
+                    let va = a[key], vb = b[key];
+                    if (va === null || va === undefined) va = -Infinity;
+                    if (vb === null || vb === undefined) vb = -Infinity;
+                    if (typeof va === 'string') return dir * va.localeCompare(vb, 'tr');
+                    return dir * (va - vb);
+                });
+            }
+
+            // Başlıklarda ok ikonları (↑ / ↓)
+            document.querySelectorAll('#leaguesHead [data-sort]').forEach(th => {
+                const isCurrent = th.dataset.sort === key;
+                th.classList.toggle('sorted', isCurrent);
+                const baseText = th.dataset.label || th.textContent.replace(/ [↑↓]$/, '');
+                th.dataset.label = baseText;
+                th.textContent = isCurrent ? `${baseText} ${dir > 0 ? '↑' : '↓'}` : baseText;
+            });
+
             const enabledCount = state.leagues.filter(l => l.gemini_analysis).length;
             document.getElementById('leaguesFooter').textContent =
                 `${rows.length} / ${state.leagues.length} lig gösteriliyor • ${enabledCount} ligde Gemini izni açık`;
@@ -1441,6 +1555,137 @@
             });
         }
 
+        // ==================== TERCİH İSABETLERİ ====================
+        function accuracyProgressBar(acc, correct, total) {
+            if (!total) return '<span class="muted">—</span>';
+            const pct = Math.min(100, Math.max(0, acc || 0));
+            const color = pct >= 70 ? '#10b981' : (pct >= 50 ? '#f59e0b' : '#ef4444');
+            return `
+                <div style="display:flex; flex-direction:column; gap:3px; max-width:180px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px;">
+                        <strong style="color:${color}; font-size:13px;">%${pct.toFixed(1)}</strong>
+                        <span class="muted" style="font-size:11px;">${correct}/${total}</span>
+                    </div>
+                    <div style="background:#e2e8f0; border-radius:4px; height:6px; overflow:hidden;">
+                        <div style="background:${color}; width:${pct}%; height:100%; border-radius:4px;"></div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function loadAccuracy() {
+            try {
+                const res = await api('/api/leagues/accuracy');
+                if (!res.success) throw new Error('Veri alınamadı.');
+                const s = res.summary;
+                document.getElementById('accKpiBestBetPct').textContent = s.best_bet_total ? `%${Number(s.best_bet_accuracy).toFixed(1)}` : '—';
+                document.getElementById('accKpiBestBetSub').textContent = `${s.best_bet_correct} / ${s.best_bet_total} tercih tuttu`;
+                document.getElementById('accKpiAltBetPct').textContent = s.alt_bet_total ? `%${Number(s.alt_bet_accuracy).toFixed(1)}` : '—';
+                document.getElementById('accKpiAltBetSub').textContent = `${s.alt_bet_correct} / ${s.alt_bet_total} tercih tuttu`;
+
+                if (s.top_league) {
+                    document.getElementById('accKpiTopLeague').textContent = s.top_league.name;
+                    document.getElementById('accKpiTopLeagueSub').textContent = `%${s.top_league.accuracy} (${s.top_league.correct}/${s.top_league.total} maç)`;
+                } else {
+                    document.getElementById('accKpiTopLeague').textContent = '—';
+                    document.getElementById('accKpiTopLeagueSub').textContent = 'Sonuçlanan maç yok';
+                }
+
+                document.getElementById('accKpiCounts').textContent = `${s.evaluated_leagues_count} Lig • ${s.total_evaluated_matches} Maç`;
+
+                state.accuracyLeagues = res.leagues || [];
+                renderAccuracy();
+            } catch (err) {
+                document.getElementById('accuracyBody').innerHTML =
+                    `<tr><td class="empty-state text-error" colspan="8">İsabet oranları yüklenemedi: ${esc(err.message)}</td></tr>`;
+            }
+        }
+
+        function renderAccuracy() {
+            const q = (document.getElementById('accuracySearch').value || '').toLowerCase().trim();
+            const sport = document.getElementById('accuracySportFilter').value;
+            const onlyEval = document.getElementById('accuracyOnlyEvaluated').checked;
+
+            let rows = state.accuracyLeagues.filter(l => {
+                if (q && !l.name.toLowerCase().includes(q)) return false;
+                if (sport !== 'ALL' && l.sport_type !== sport) return false;
+                if (onlyEval && (!l.evaluated || l.evaluated === 0)) return false;
+                return true;
+            });
+
+            // Sıralama
+            const { key, dir } = state.accuracySort || { key: 'best_bet_accuracy', dir: -1 };
+            if (key) {
+                rows.sort((a, b) => {
+                    let va = a[key], vb = b[key];
+                    if (va === null || va === undefined) va = -Infinity;
+                    if (vb === null || vb === undefined) vb = -Infinity;
+                    if (typeof va === 'string') return dir * va.localeCompare(vb, 'tr');
+                    return dir * (va - vb);
+                });
+            }
+
+            // Başlıklarda ok ikonları (↑ / ↓)
+            document.querySelectorAll('#accuracyHead [data-sort]').forEach(th => {
+                const isCurrent = th.dataset.sort === key;
+                th.classList.toggle('sorted', isCurrent);
+                const baseText = th.dataset.label || th.textContent.replace(/ [↑↓]$/, '');
+                th.dataset.label = baseText;
+                th.textContent = isCurrent ? `${baseText} ${dir > 0 ? '↑' : '↓'}` : baseText;
+            });
+
+            document.getElementById('accuracyFooter').textContent =
+                `${rows.length} / ${state.accuracyLeagues.length} lig gösteriliyor`;
+
+            const body = document.getElementById('accuracyBody');
+            if (rows.length === 0) {
+                body.innerHTML = `<tr><td class="empty-state" colspan="8">Kriterlere uygun lig bulunamadı.</td></tr>`;
+                return;
+            }
+
+            body.innerHTML = rows.map(l => {
+                const acc1 = l.best_bet_accuracy;
+                let levelBadge = '<span class="muted">Yetersiz Veri</span>';
+                let weightBadge = '<span class="muted">Nötr</span>';
+
+                if (l.best_bet_total >= 2 && acc1 !== null) {
+                    if (acc1 >= 75) {
+                        levelBadge = `<span class="badge badge-success">🏆 Yüksek (%${acc1})</span>`;
+                        weightBadge = `<span class="badge badge-gold" title="Kupon motorunda +20 puan bonus">+%20 Bonus</span>`;
+                    } else if (acc1 >= 65) {
+                        levelBadge = `<span class="badge badge-success">✓ Başarılı</span>`;
+                        weightBadge = `<span class="badge badge-brand" title="Kupon motorunda +12 puan bonus">+%12 Bonus</span>`;
+                    } else if (acc1 < 40) {
+                        levelBadge = `<span class="badge badge-error">⚠ Düşük</span>`;
+                        weightBadge = `<span class="badge badge-error" title="Kupon motorunda -25 puan ceza">-%25 Ceza</span>`;
+                    } else if (acc1 < 50) {
+                        levelBadge = `<span class="badge badge-warning">Düşük İsabet</span>`;
+                        weightBadge = `<span class="badge badge-warning" title="Kupon motorunda -10 puan ceza">-%10 Ceza</span>`;
+                    } else {
+                        levelBadge = `<span class="badge badge-warning">⚖️ Dengeli</span>`;
+                        weightBadge = `<span class="muted">Dengeli</span>`;
+                    }
+                }
+
+                return `
+                    <tr>
+                        <td class="truncate" style="max-width:320px;" title="${esc(l.name)}">
+                            <strong>${isBasketball(l.sport_type) ? '🏀 ' : '⚽ '}${esc(l.name)}</strong>
+                        </td>
+                        <td>${sportLabel(l.sport_type)}</td>
+                        <td class="num"><strong>${l.evaluated || 0}</strong></td>
+                        <td>${accuracyProgressBar(l.best_bet_accuracy, l.best_bet_correct, l.best_bet_total)}</td>
+                        <td>${accuracyProgressBar(l.alt_bet_accuracy, l.alt_bet_correct, l.alt_bet_total)}</td>
+                        <td class="center">${levelBadge}</td>
+                        <td class="center">${weightBadge}</td>
+                        <td class="center">
+                            <span class="badge ${l.gemini_analysis ? 'badge-success' : ''}">${l.gemini_analysis ? 'Açık' : 'Kapalı'}</span>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
         // ==================== EVENT BINDINGS ====================
         document.querySelectorAll('.global-nav-item').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
         document.querySelectorAll('[data-admin-page]').forEach(b => b.addEventListener('click', () => showTab('admin', b.dataset.adminPage)));
@@ -1522,6 +1767,38 @@
             if (btn) analyzeLeague(Number(btn.dataset.analyzeLeague), btn);
         });
 
+        // Lig tablosunda sütuna tıklayarak sıralama
+        const leaguesHead = document.getElementById('leaguesHead');
+        if (leaguesHead) {
+            leaguesHead.addEventListener('click', e => {
+                const th = e.target.closest('[data-sort]');
+                if (!th) return;
+                const key = th.dataset.sort;
+                state.leagueSort = state.leagueSort.key === key
+                    ? { key, dir: -state.leagueSort.dir }
+                    : { key, dir: -1 };
+                renderLeagues();
+            });
+        }
+
+        // Tercih İsabetleri tablosunda sıralama ve filtreleme
+        const accuracyHead = document.getElementById('accuracyHead');
+        if (accuracyHead) {
+            accuracyHead.addEventListener('click', e => {
+                const th = e.target.closest('[data-sort]');
+                if (!th) return;
+                const key = th.dataset.sort;
+                state.accuracySort = state.accuracySort.key === key
+                    ? { key, dir: -state.accuracySort.dir }
+                    : { key, dir: -1 };
+                renderAccuracy();
+            });
+        }
+        document.getElementById('accuracySearch').addEventListener('input', renderAccuracy);
+        document.getElementById('accuracySportFilter').addEventListener('change', renderAccuracy);
+        document.getElementById('accuracyOnlyEvaluated').addEventListener('change', renderAccuracy);
+        document.getElementById('btnRefreshAccuracy').addEventListener('click', loadAccuracy);
+
         // ==================== BAŞLANGIÇ ====================
         window.addEventListener('DOMContentLoaded', () => {
             setView(new URLSearchParams(location.search).get('view'));
@@ -1529,7 +1806,7 @@
             statsJob.load();
             predictionJob.load();
             resultsJob.load();
-            if (location.hash.startsWith('#admin')) routeFromHash();
+            if (location.hash) routeFromHash();
 
             // KPI kartlarına tıklayarak doğrudan görünümler arası geçiş
             const kpiUnfinished = document.getElementById('kpiCardUnfinished');
