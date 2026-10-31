@@ -710,6 +710,29 @@
             }).join('') + '</tr>';
         }
 
+        function renderLeagueCell(m) {
+            const name = esc(m.league_name || '—');
+            const acc = m.league_accuracy !== null && m.league_accuracy !== undefined ? m.league_accuracy : m.league_ft_accuracy;
+            const total = m.league_evaluated || 0;
+
+            let badge = '';
+            if (acc !== null && acc !== undefined && total > 0) {
+                const cls = acc >= 75 ? 'badge-success' : (acc >= 55 ? 'badge-warning' : 'badge-error');
+                const icon = acc >= 75 ? '🏆 ' : '';
+                badge = `<div style="margin-top:2px;">
+                    <span class="badge ${cls}" style="font-size:11px; padding:1px 6px; font-weight:700;"
+                          title="Yapay zekanın bu ligdeki geçmiş tahmin başarı oranı: %${acc.toFixed(1)} (${total} maç)">
+                        ${icon}%${acc.toFixed(0)} (${total})
+                    </span>
+                </div>`;
+            }
+
+            return `<div class="truncate" style="max-width:140px;" title="${esc(m.league_name || '')}">
+                <span style="font-weight:600;">${name}</span>
+                ${badge}
+            </div>`;
+        }
+
         function renderRow(m) {
             const o = m._odds;
             const detailUrl = `/matches/${m.id}`;
@@ -765,7 +788,7 @@
                         </td>
                         <td>${scoreCell}</td>
                         <td>${evalCell}</td>
-                        <td class="truncate" style="max-width:120px;" title="${esc(m.league_name)}">${esc(m.league_name)}</td>
+                        <td>${renderLeagueCell(m)}</td>
                         <td>${prediction}</td>
                         <td>${confidenceBadge(m.confidence_score)}</td>
                         <td>${bestBetCell}</td>
@@ -797,7 +820,7 @@
                     <td class="truncate" style="max-width:210px;" title="${esc(m.home_team)} – ${esc(m.away_team)}">
                         <a href="${detailUrl}" style="color:inherit;">${isBasketball(m.sport_type) ? '<span title="Basketbol">🏀</span> ' : ''}${m.played ? PLAYED_MARK : ''}${esc(m.home_team)} <span class="muted">–</span> ${esc(m.away_team)}</a>
                     </td>
-                    <td class="truncate" style="max-width:120px;" title="${esc(m.league_name)}">${esc(m.league_name)}</td>
+                    <td>${renderLeagueCell(m)}</td>
                     <td class="num">${formatOdd(o.ms1)}</td>
                     <td class="num">${formatOdd(o.ms0)}</td>
                     <td class="num">${formatOdd(o.ms2)}</td>

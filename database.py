@@ -865,15 +865,20 @@ def get_played_match_ids(conn: sqlite3.Connection, match_ids: List[int]) -> set:
         f"SELECT DISTINCT match_id FROM coupon_items WHERE match_id IN ({placeholders})", match_ids)}
 
 def _enrich_matches(conn: sqlite3.Connection, rows: List[sqlite3.Row]) -> List[Dict[str, Any]]:
-    """Maç satırlarını sözlüğe çevirir; oranları, yerel saat alanlarını ve oynanan kuponda olup olmadığını (played) ekler."""
+    """Maç satırlarını sözlüğe çevirir; oranları, yerel saat alanlarını, oynanan kupon durumunu ve lig başarı oranlarını ekler."""
     matches = [dict(row) for row in rows]
     match_ids = [m["id"] for m in matches]
     odds_by_match = _get_odds_by_match(conn, match_ids)
     played = get_played_match_ids(conn, match_ids)
+    league_stats = get_league_prediction_stats(conn)
     for m in matches:
         add_local_time_fields(m)
         m["odds"] = odds_by_match.get(m["id"], [])
         m["played"] = m["id"] in played
+        l_stat = league_stats.get(m.get("league_id"), {})
+        m["league_accuracy"] = l_stat.get("best_bet_accuracy")
+        m["league_ft_accuracy"] = l_stat.get("ft_accuracy")
+        m["league_evaluated"] = l_stat.get("evaluated", 0)
         # Eski tahminlerde ⭐ oranı kayıtlı değil: bülten oranından tamamlanır
         if m.get("best_bet_selection") and not m.get("best_bet_odds"):
             m["best_bet_odds"] = rules.selection_odds(m["odds"], m.get("best_bet_market"), m["best_bet_selection"])
