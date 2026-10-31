@@ -29,12 +29,20 @@ MATCH_COMPLETION_DELAY_MINUTES = int(os.getenv("MATCH_COMPLETION_DELAY_MINUTES",
 # 6. Banko Kupon İçin Minimum Güven Eşiği (0 - 100)
 MIN_CONFIDENCE_FOR_COUPON = int(os.getenv("MIN_CONFIDENCE_FOR_COUPON", "70"))
 
+# Kupon motoru oran sınırları
+MIN_MATCH_ODDS = float(os.getenv("MIN_MATCH_ODDS", "1.20"))
+MIN_COUPON_TOTAL_ODDS = float(os.getenv("MIN_COUPON_TOTAL_ODDS", "2.00"))
+
 # 7. Toplu Analizlerde İstekler Arası Bekleme Süresi (Saniye)
 BATCH_REQUEST_DELAY = float(os.getenv("BATCH_REQUEST_DELAY", "1.5"))
 
 # Toplu analizde (Maçları Analiz Et) aynı anda Gemini'ye gönderilen maç sayısı.
 # Artırmak hızlandırır ama Gemini dakika başı istek limitine (429) takılma riskini artırır.
 GEMINI_PARALLEL_REQUESTS = max(1, int(os.getenv("GEMINI_PARALLEL_REQUESTS", "3")))
+
+# 2. tercih eşiği: ⭐ en güçlü tercihin oranı bunun altındaysa Gemini, oranı bu değer ve üstü seçenekler arasından
+# bir 2. tercih (alt_bet) de verir.
+MIN_BEST_BET_ODDS = float(os.getenv("MIN_BEST_BET_ODDS", "1.30"))
 
 # Tek bir Gemini isteği için zaman aşımı (saniye). İnternet koparsa / bilgisayar uyursa istek sonsuza kadar beklemez.
 GEMINI_TIMEOUT_SECONDS = max(10, int(os.getenv("GEMINI_TIMEOUT_SECONDS", "120")))

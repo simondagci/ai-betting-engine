@@ -16,6 +16,8 @@ import data_source
 import iddaa_api
 import stats_sync
 import prediction_batch
+import results_sync
+import coupon
 import gemini_engine
 import rules
 
@@ -508,8 +510,8 @@ class TestGeminiEngine(unittest.TestCase):
             client = gemini_engine.get_gemini_client()
         self.assertEqual(client._api_client._http_options.timeout, config.GEMINI_TIMEOUT_SECONDS * 1000)
 
-    # best_bet yanıtta olmasa bile her zaman (None) eklenir
-    PREDICTION = {"predicted_score": "2-1", "confidence_score": 80, "best_bet": None}
+    # best_bet / alt_bet yanıtta olmasa bile her zaman (None) eklenir
+    PREDICTION = {"predicted_score": "2-1", "confidence_score": 80, "best_bet": None, "alt_bet": None}
 
     def _run_with_responses(self, side_effect):
         client = mock.MagicMock()
@@ -593,7 +595,7 @@ class TestWebServer(unittest.TestCase):
         data = self.client.get(f"/api/matches/{self.match_id}/details").get_json()["data"]
         self.assertEqual(data["match"]["status"], "COMPLETED")
         self.assertEqual(data["predictions"][0]["evaluation"],
-                         {"ht": True, "ft": True, "over_under": True, "kg": False, "score": True, "total_diff": None, "best_bet": None})
+                         {"ht": True, "ht_score": None, "ft": True, "over_under": True, "kg": False, "score": True, "total_diff": None, "best_bet": None, "alt_bet": None})
 
     def test_sync_stats_keeps_existing_fields(self):
         url = f"/api/matches/{self.match_id}/sync_stats"
@@ -691,6 +693,38 @@ class TestWebServer(unittest.TestCase):
         # .env varsayılanına dönüş
         res = self.client.post("/api/admin/settings/gemini", json={"enabled": None}).get_json()
         self.assertEqual((res["gemini"]["enabled"], res["gemini"]["source"]), (config.ENABLE_GEMINI_ANALYSIS, "env"))
+
+    def test_coupon_odds_settings_flow(self):
+        # 1. Başlangıçta .env varsayılanları
+        settings = self.client.get("/api/admin/settings").get_json()
+        self.assertIn("coupon_odds", settings)
+        self.assertEqual(settings["coupon_odds"]["min_match_odds"], config.MIN_MATCH_ODDS)
+        self.assertEqual(settings["coupon_odds"]["min_coupon_odds"], config.MIN_COUPON_TOTAL_ODDS)
+        self.assertEqual(settings["coupon_odds"]["source"], "env")
+
+        # 2. Panelden güncelleme (1.20 ve 1.80 gibi daha düşük değerler de dahil)
+        res = self.client.post("/api/admin/settings/coupon_odds", json={
+            "min_match_odds": 1.20,
+            "min_coupon_odds": 1.80
+        }).get_json()
+        self.assertTrue(res["success"])
+        self.assertEqual(res["coupon_odds"]["min_match_odds"], 1.20)
+        self.assertEqual(res["coupon_odds"]["min_coupon_odds"], 1.80)
+        self.assertEqual(res["coupon_odds"]["source"], "panel")
+
+        # GET ile kontrol
+        check = self.client.get("/api/admin/settings").get_json()["coupon_odds"]
+        self.assertEqual(check["min_match_odds"], 1.20)
+        self.assertEqual(check["min_coupon_odds"], 1.80)
+        self.assertEqual(check["source"], "panel")
+
+        # 3. .env varsayılanına sıfırlama (null)
+        reset_res = self.client.post("/api/admin/settings/coupon_odds", json={"min_match_odds": None, "min_coupon_odds": None}).get_json()
+        self.assertTrue(reset_res["success"])
+        self.assertEqual(reset_res["coupon_odds"]["source"], "env")
+        self.assertEqual(reset_res["coupon_odds"]["min_match_odds"], config.MIN_MATCH_ODDS)
+        self.assertEqual(reset_res["coupon_odds"]["min_coupon_odds"], config.MIN_COUPON_TOTAL_ODDS)
+        self.assertEqual(self.client.post("/api/admin/settings/coupon_odds", json={"min_match_odds": "abc"}).status_code, 400)
 
     def test_missing_stats_not_sent_to_gemini(self):
         with database.db_session(TEST_DB) as conn:
@@ -833,7 +867,7 @@ class TestBasketball(unittest.TestCase):
         result = {"ht_home_score": 56, "ht_away_score": 50, "ft_home_score": 110, "ft_away_score": 104}
         ev = rules.evaluate_prediction({"predicted_ht_result": "İY 1", "predicted_ft_result": "MS 1", "predicted_score": "112-105",
                                         "predicted_total_points": 217, "predicted_over_under_3": "ÜST"}, result, "BASKETBALL")
-        self.assertEqual(ev, {"ht": True, "ft": True, "over_under": None, "kg": None, "score": False, "total_diff": 3, "best_bet": None})
+        self.assertEqual(ev, {"ht": True, "ht_score": None, "ft": True, "over_under": None, "kg": None, "score": False, "total_diff": 3, "best_bet": None, "alt_bet": None})
 
     def test_basketball_results_and_accuracy(self):
         if os.path.exists(TEST_DB):
@@ -868,34 +902,82 @@ class TestBasketball(unittest.TestCase):
         self.assertEqual((accuracy["total_points_evaluated"], accuracy["total_points_avg_diff"]), (1, 21.0))
 
 class TestBestBet(unittest.TestCase):
-    """Gemini'nin en güçlü tercihi (⭐): tahminden türetilir, kaydedilir, sonuçla değerlendirilir, lig bazında raporlanır."""
+    """⭐ En güçlü tercih (oran sınırı yok) + oranı MIN_BEST_BET_ODDS altındaysa oranı eşik üstü 2. tercih; seçimlerin kendisi değerlendirilir."""
 
-    def test_market_key_mapping(self):
-        cases = {"MS": "ft", "Maç Sonu": "ft", "İY": "ht", "ilk yarı": "ht", "ALT/ÜST": "over_under", "3 Gol Alt/Üst": "over_under",
-                 "KG": "kg", "Karşılıklı Gol": "kg", "Handikap": None, None: None}
-        for market, expected in cases.items():
-            self.assertEqual(rules.best_bet_market_key(market), expected, market)
-        self.assertIsNone(rules.best_bet_market_key("KG", "BASKETBALL"))
-        self.assertIsNone(rules.best_bet_market_key("ALT/ÜST", "BASKETBALL"))
-        self.assertEqual(rules.best_bet_market_key("MS", "BASKETBALL"), "ft")
+    ODDS = [
+        {"market_name": "Maç Sonucu", "option_name": "MS 1", "odds_value": 1.10},
+        {"market_name": "Maç Sonucu", "option_name": "MS 0", "odds_value": 7.50},
+        {"market_name": "Maç Sonucu", "option_name": "MS 2", "odds_value": 15.0},
+        {"market_name": "İlk Yarı Sonucu", "option_name": "İY 1", "odds_value": 1.55},
+        {"market_name": "3.5 Gol Alt/Üst", "option_name": "3.5 Alt", "odds_value": 1.30},
+        {"market_name": "3.5 Gol Alt/Üst", "option_name": "3.5 Üst", "odds_value": 3.10},
+        {"market_name": "Karşılıklı Gol", "option_name": "KG VAR", "odds_value": 1.85},
+        {"market_name": "Karşılıklı Gol", "option_name": "KG YOK", "odds_value": 1.80},
+        {"market_name": "Çifte Şans", "option_name": "X-2", "odds_value": 5.20},
+        {"market_name": "2.5 Gol Alt/Üst", "option_name": "2.5 Üst", "odds_value": 1.60},
+    ]
 
-    def test_finalize_best_bet_uses_prediction_value(self):
-        prediction = {"predicted_ft_result": "MS 1", "predicted_kg": "KG VAR", "predicted_over_under_3": "ALT",
-                      "best_bet_market": "KG", "best_bet_confidence": 81, "best_bet_reason": "İki takım da gol atıyor"}
-        result = gemini_engine._finalize(prediction, {"match": {"sport_type": "FOOTBALL"}, "odds": []})
-        self.assertEqual(result["best_bet"], {"market": "kg", "selection": "KG VAR", "confidence": 81, "reason": "İki takım da gol atıyor"})
-        self.assertNotIn("best_bet_market", result)
-        # Tanınmayan market -> ⭐ yok
-        unknown = gemini_engine._finalize({"predicted_ft_result": "MS 1", "best_bet_market": "Korner"}, {"match": {}, "odds": []})
-        self.assertIsNone(unknown["best_bet"])
+    def _ctx(self, sport="FOOTBALL", odds=None):
+        return {"match": {"home_team": "A", "away_team": "B", "sport_type": sport}, "odds": self.ODDS if odds is None else odds}
 
-    def test_schema_requires_best_bet(self):
+    def test_bet_candidates_respect_min_odds(self):
+        candidates = {(c["market"], c["selection"]): c["odds"] for c in rules.bet_candidates(self.ODDS, "FOOTBALL", 1.50)}
+        # MS 1 (1.10) ve ALT (1.30) eşiğin altında; 2.5 Gol marketi aday değil (futbolda Alt/Üst 3 gol = 3.5 baremi)
+        self.assertEqual(set(candidates), {("ft", "MS 0"), ("ft", "MS 2"), ("ht", "İY 1"), ("over_under", "ÜST"),
+                                           ("kg", "KG VAR"), ("kg", "KG YOK"), ("dc", "X-2")})
+        basketball = {c["market"] for c in rules.bet_candidates(self.ODDS, "BASKETBALL", 1.50)}
+        self.assertEqual(basketball, {"ft", "ht"})
+        self.assertEqual(rules.selection_odds(self.ODDS, "over_under", "ALT"), 1.30)
+
+    def test_selection_won(self):
+        result = {"ht_home_score": 0, "ht_away_score": 0, "ft_home_score": 1, "ft_away_score": 1}
+        cases = [("ft", "MS 0", True), ("ft", "MS 1", False), ("ht", "İY 0", True), ("over_under", "ALT", True),
+                 ("over_under", "ÜST", False), ("kg", "KG VAR", True), ("dc", "1-X", True), ("dc", "1-2", False),
+                 ("dc", "X-2", True), ("bilinmeyen", "x", None)]
+        for market, selection, expected in cases:
+            self.assertEqual(rules.selection_won(market, selection, result), expected, (market, selection))
+
+    def test_prompt_lists_all_candidates_with_alt_bet_rule(self):
+        with mock.patch.object(config, "MIN_BEST_BET_ODDS", 1.30):
+            prompt = gemini_engine.build_prompt(self._ctx())
+        self.assertIn("--- EN GÜÇLÜ TERCİH (best_bet) VE 2. TERCİH (alt_bet) ---", prompt)
+        self.assertIn("- MS 1 (Maç Sonu) | Oran 1.10 | Piyasa olasılığı %91", prompt)   # düşük oranlı seçenekler de listelenir
+        self.assertIn("- KG VAR (Karşılıklı Gol) | Oran 1.85 | Piyasa olasılığı %54", prompt)
+        self.assertIn("- X-2 (Çifte Şans) | Oran 5.20", prompt)
+        self.assertIn("best_bet seçeneğinin oranı 1.30 altındaysa", prompt)
+
+    def test_finalize_best_bet_and_alt_bet(self):
+        def finalize(selection, alt_selection="YOK", alt_confidence=0, odds=None):
+            prediction = {"predicted_ft_result": "MS 1", "best_bet_selection": selection, "best_bet_confidence": 90,
+                          "best_bet_reason": "gerekçe", "alt_bet_selection": alt_selection, "alt_bet_confidence": alt_confidence}
+            with mock.patch.object(config, "MIN_BEST_BET_ODDS", 1.50):
+                result = gemini_engine._finalize(prediction, self._ctx(odds=odds))
+            return result["best_bet"], result["alt_bet"]
+
+        # Düşük oranlı ⭐ (MS 1 @ 1.10) eskisi gibi kabul edilir; oranı eşik üstü 2. tercih de kaydedilir
+        best, alt = finalize("ms 1", "kg var", 62)
+        self.assertEqual(best, {"market": "ft", "selection": "MS 1", "odds": 1.10, "confidence": 90, "reason": "gerekçe"})
+        self.assertEqual(alt, {"market": "kg", "selection": "KG VAR", "odds": 1.85, "confidence": 62})
+        # Çifte Şans 2. tercih olabilir, eşiğin altındaki seçenek (ALT @ 1.30) olamaz
+        self.assertEqual(finalize("MS 1", "X-2", 30)[1]["selection"], "X-2")
+        self.assertIsNone(finalize("MS 1", "ALT", 80)[1])
+        self.assertIsNone(finalize("MS 1", "YOK", 0)[1])
+        # ⭐ oranı eşik ve üstüyse 2. tercih tutulmaz
+        best, alt = finalize("KG VAR", "ÜST", 40)
+        self.assertEqual((best["selection"], alt), ("KG VAR", None))
+        # Çifte Şans ve bilinmeyen seçimler ⭐ olamaz
+        self.assertIsNone(finalize("X-2")[0])
+        self.assertIsNone(finalize("Korner Üst")[0])
+
+    def test_schema_requires_bet_fields(self):
         from google import genai
         from google.genai import _transformers
         client = genai.Client(api_key="offline-test")._api_client
+        required_fields = {"best_bet_selection", "best_bet_confidence", "best_bet_reason", "alt_bet_selection", "alt_bet_confidence"}
         for model in (gemini_engine.MatchPrediction, gemini_engine.BasketballPrediction):
             schema = _transformers.t_schema(client, model)
-            self.assertTrue({"best_bet_market", "best_bet_confidence", "best_bet_reason"} <= set(schema.required), model.__name__)
+            self.assertTrue(required_fields <= set(schema.required), model.__name__)
+            self.assertNotIn("best_bet_market", schema.properties)
 
     def test_best_bet_saved_evaluated_and_league_stats(self):
         if os.path.exists(TEST_DB):
@@ -909,30 +991,39 @@ class TestBestBet(unittest.TestCase):
             league_id = database.get_or_create_league(conn, "Test Lig")
             m1 = database.save_match(conn, "BB1", "A", "B", "Test Lig", "01.01.2099", "20:00")
             m2 = database.save_match(conn, "BB2", "C", "D", "Test Lig", "01.01.2099", "21:00")
-            # m1: önce yanlış (KG), sonra doğru (MS) ⭐ tercih -> sadece SON tahmin sayılır
-            database.save_prediction(conn, m1, {**base, "best_bet": {"market": "kg", "selection": "KG YOK", "confidence": 60, "reason": "x"}})
-            database.save_prediction(conn, m1, {**base, "best_bet": {"market": "ft", "selection": "MS 1", "confidence": 80, "reason": "Ev sahibi formda"}})
-            database.save_prediction(conn, m2, {**base, "best_bet": {"market": "over_under", "selection": "ALT", "confidence": 75, "reason": "y"}})
+            database.save_odds(conn, m1, self.ODDS)
+            # m1: önce yanlış (MS 0), sonra doğru (KG VAR) değerli tercih -> lig oranında sadece SON tahmin sayılır
+            database.save_prediction(conn, m1, {**base, "best_bet": {"market": "ft", "selection": "MS 0", "odds": 7.5, "confidence": 20, "reason": "x"}})
+            database.save_prediction(conn, m1, {**base, "best_bet": {"market": "kg", "selection": "KG VAR", "odds": 1.85, "confidence": 62, "reason": "İki takım da gol atıyor"},
+                                                "alt_bet": {"market": "ft", "selection": "MS 0", "odds": 7.5, "confidence": 25}})
+            # m2: eski tahmin (oran kayıtlı değil) -> çifte şans tuttu
+            database.save_prediction(conn, m2, {**base, "best_bet": {"market": "dc", "selection": "X-2", "confidence": 40, "reason": "y"}})
             database.save_match_stats(conn, m1, h2h_data=[{"score": "1-0"}], home_last=None, away_last=None, missing=None, league_table=None)
-            database.save_result(conn, m1, 1, 1, 2, 1)   # MS 1 tuttu, KG VAR oldu
-            database.save_result(conn, m2, 1, 1, 3, 2)   # 5 gol: ALT tutmadı
+            database.save_result(conn, m1, 1, 1, 2, 1)   # KG VAR tuttu, MS 0 tutmadı
+            database.save_result(conn, m2, 0, 1, 0, 2)   # deplasman kazandı: X-2 tuttu
 
         data = client.get(f"/api/matches/{m1}/details").get_json()["data"]
         latest = data["predictions"][0]
-        self.assertEqual(latest["best_bet"], {"market": "ft", "selection": "MS 1", "confidence": 80, "reason": "Ev sahibi formda"})
+        self.assertEqual(latest["best_bet"], {"market": "kg", "selection": "KG VAR", "odds": 1.85, "confidence": 62, "reason": "İki takım da gol atıyor"})
         self.assertTrue(latest["evaluation"]["best_bet"])
+        self.assertEqual(latest["alt_bet"], {"market": "ft", "selection": "MS 0", "odds": 7.5, "confidence": 25})
+        self.assertFalse(latest["evaluation"]["alt_bet"])   # 2-1 bitti: MS 0 tutmadı
+        self.assertIsNone(data["predictions"][1]["alt_bet"])
         self.assertFalse(data["predictions"][1]["evaluation"]["best_bet"])
 
         league = next(l for l in client.get("/api/admin/leagues").get_json()["leagues"] if l["id"] == league_id)
-        self.assertEqual((league["evaluated"], league["best_bet_total"], league["best_bet_correct"], league["best_bet_accuracy"]), (2, 2, 1, 50.0))
+        self.assertEqual((league["evaluated"], league["best_bet_total"], league["best_bet_correct"], league["best_bet_accuracy"]), (2, 2, 2, 100.0))
+        self.assertEqual((league["alt_bet_total"], league["alt_bet_correct"], league["alt_bet_accuracy"]), (1, 0, 0.0))
 
         completed = {m["code"]: m for m in client.get("/api/matches/completed").get_json()["matches"]}
-        self.assertEqual((completed["BB1"]["best_bet_correct"], completed["BB2"]["best_bet_correct"]), (True, False))
+        self.assertEqual((completed["BB1"]["best_bet_correct"], completed["BB2"]["best_bet_correct"]), (True, True))
+        self.assertEqual(completed["BB1"]["best_bet_odds"], 1.85)
+        self.assertEqual((completed["BB1"]["alt_bet_selection"], completed["BB1"]["alt_bet_correct"]), ("MS 0", False))
         with database.db_session(TEST_DB) as conn:
             accuracy = database.calculate_prediction_accuracy(conn)
         os.remove(TEST_DB)
-        # Genel raporda her tahmin sayılır (m1'in iki tahmini + m2)
-        self.assertEqual((accuracy["best_bet_total"], accuracy["best_bet_correct"]), (3, 1))
+        self.assertEqual((accuracy["best_bet_total"], accuracy["best_bet_correct"]), (3, 2))
+        self.assertEqual((accuracy["alt_bet_total"], accuracy["alt_bet_correct"]), (1, 0))
 
 class TestPredictionBatch(unittest.TestCase):
     """Toplu Gemini analizi: sadece uygun maçlar, arka planda, kota / hata durumunda kendiliğinden durur."""
@@ -1207,17 +1298,32 @@ class TestSourceSwitchAndSync(unittest.TestCase):
             for code, dt in (("R1", yesterday), ("R2", yesterday), ("R_OLD", old)):
                 database.save_match(conn, code, f"{code} Ev", f"{code} Dep", "Lig", dt.strftime("%d.%m.%Y"), "18:00")
 
+        # R2: ilk yarı skoru yok (uzatma / penaltı vb.) -> futbolda yazılmaz
         fetched = [{"code": "R1", "ht_home": 1, "ht_away": 0, "ft_home": 3, "ft_away": 1},
                    {"code": "R2", "ht_home": None, "ht_away": None, "ft_home": 0, "ft_away": 0}]
         with mock.patch.object(data_source, "fetch_match_results", return_value=fetched) as fetch:
             res = self.client.post("/api/admin/sync_results", json={"days": 7}).get_json()
+            results_sync.wait(10)
         fetch.assert_called_once_with(yesterday.strftime("%Y-%m-%d"), is_basketball=False)
-        self.assertEqual((res["awaiting"], res["updated_count"], res["missing_count"]), (2, 1, 1))
+        self.assertTrue(res["job"]["started"])
+        self.assertEqual(res["job"]["total"], 2)
+
+        job = self.client.get("/api/admin/jobs/results").get_json()["job"]
+        self.assertEqual((job["status"], job["processed"], job["updated"], job["missing"], job["percent"]),
+                         ("done", 2, 1, 1, 100.0))
 
         with database.db_session(TEST_DB) as conn:
             r1 = database.get_match_result(conn, database.get_match_by_code(conn, "R1")["id"])
             self.assertEqual((r1["ft_home_score"], r1["ft_away_score"], r1["is_over_3_goals"]), (3, 1, 1))
             self.assertIsNone(database.get_match_result(conn, database.get_match_by_code(conn, "R2")["id"]))
+
+        # İkinci çalıştırma: Skoru olan maçlar (R1) kesinlikle tekrar sorgulanmaz / güncellenmez
+        with mock.patch.object(data_source, "fetch_match_results", return_value=fetched) as fetch2:
+            res2 = self.client.post("/api/admin/sync_results", json={"days": 7}).get_json()
+            results_sync.wait(10)
+        # Sadece skoru olmayan R2 için 1 maç işlenir
+        job2 = self.client.get("/api/admin/jobs/results").get_json()["job"]
+        self.assertEqual(job2["total"], 1)
 
         with mock.patch.object(config, "DATA_SOURCE", "nesine"):
             self.assertEqual(self.client.post("/api/admin/sync_results", json={}).status_code, 400)
@@ -1276,6 +1382,214 @@ class TestSourceSwitchAndSync(unittest.TestCase):
              mock.patch.object(iddaa_api, "fetch_bulletin", return_value=["i"]), mock.patch.object(nesine_api, "fetch_bulletin", return_value=["n"]):
             self.assertEqual((data_source.fetch_bulletin(), data_source.source_name()), (["n"], "Nesine"))
             self.assertIsNone(data_source.fetch_match_results("2026-10-28"))
+
+    def test_results_sync_cancel_and_idle(self):
+        # Bekleyen maç yoksa job total 0 olarak hemen biter
+        res = self.client.post("/api/admin/sync_results", json={"days": 7}).get_json()
+        self.assertFalse(res["job"]["started"])
+        self.assertEqual(res["job"]["status"], "done")
+
+        # İptal etme testi
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        yesterday = datetime.now(ZoneInfo(config.SOURCE_TIMEZONE)) - timedelta(days=1)
+        with database.db_session(TEST_DB) as conn:
+            for i in range(3):
+                database.save_match(conn, f"C_CANCEL_{i}", f"Ev {i}", f"Dep {i}", "Lig", yesterday.strftime("%d.%m.%Y"), "18:00")
+
+        gate = threading.Event()
+        first_started = threading.Event()
+
+        def slow_fetch(date_str, is_basketball=False):
+            first_started.set()
+            gate.wait(5)
+            return [{"code": "C_CANCEL_0", "ht_home": 1, "ht_away": 0, "ft_home": 2, "ft_away": 1}]
+
+        with mock.patch.object(data_source, "fetch_match_results", side_effect=slow_fetch):
+            started = self.client.post("/api/admin/sync_results", json={"days": 7}).get_json()["job"]
+            self.assertTrue(started["started"])
+            self.assertTrue(first_started.wait(5))
+            self.client.post("/api/admin/jobs/results/cancel")
+            gate.set()
+            results_sync.wait(10)
+        job = results_sync.get_status()
+        # İlk maç sürerken iptal edildi: kalan 2 maç işlenmez
+        self.assertEqual((job["status"], job["processed"]), ("cancelled", 1))
+
+    def test_coupon_generator_and_league_weighting(self):
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        started_at = datetime.now(ZoneInfo(config.SOURCE_TIMEZONE)) - timedelta(minutes=10)
+
+        def bet(selection, odds, confidence, market="ft"):
+            return {"market": market, "selection": selection, "odds": odds, "confidence": confidence, "reason": "r"}
+
+        def predict(conn, code, league, best, alt=None, date="01.01.2099", time="20:00"):
+            mid = database.save_match(conn, code, f"{code} Ev", f"{code} Dep", league, date, time)
+            database.save_prediction(conn, mid, {"predicted_ft_result": "MS 1", "predicted_score": "2-0", "confidence_score": 70,
+                                                 "best_bet": best, "alt_bet": alt})
+            return mid
+
+        with database.db_session(TEST_DB) as conn:
+            # Geçmiş: 'Başarılı' ligde ⭐ 3/3, 'Başarısız' ligde 1/3 tuttu
+            for i in range(3):
+                database.save_result(conn, predict(conn, f"PA{i}", "Başarılı", bet("MS 1", 1.5, 70), date="01.01.2020"), 1, 0, 2, 0)
+                database.save_result(conn, predict(conn, f"PB{i}", "Başarısız", bet("MS 1", 1.5, 70), date="01.01.2020"),
+                                     0, 0, 2 if i == 0 else 0, 1)
+            predict(conn, "FUT_A", "Başarılı", bet("MS 1", 1.50, 80))
+            predict(conn, "FUT_B", "Başarısız", bet("MS 1", 1.50, 82))
+            # ⭐ oranı düşük (1.10) -> 2. tercih (KG VAR 1.70) kullanılır
+            predict(conn, "FUT_ALT", "Üçüncü Lig", bet("MS 1", 1.10, 95), bet("KG VAR", 1.70, 60, "kg"))
+            # ⭐ düşük ve 2. tercih yok -> kupona girmez
+            predict(conn, "FUT_LOW", "Üçüncü Lig", bet("MS 1", 1.20, 98))
+            # Analiz edilmemiş ve başlamış maçlar kupona girmez
+            database.save_match(conn, "FUT_NO_PRED", "C1", "C2", "Başarılı", "01.01.2099", "20:00")
+            predict(conn, "STARTED", "Başarılı", bet("MS 1", 1.60, 90),
+                    date=started_at.strftime("%d.%m.%Y"), time=started_at.strftime("%H:%M"))
+
+        # .env / config varsayılanı: maç >= 1.30, kupon >= 2.00 (kullanıcının .env değerinden bağımsız)
+        with mock.patch.multiple(config, MIN_MATCH_ODDS=1.30, MIN_COUPON_TOTAL_ODDS=2.00):
+            slip = coupon.generate_coupon(match_count=3, today_only=False, strategy="banko", db_path=TEST_DB)
+        self.assertTrue(slip["success"], slip.get("message"))
+        by_code = {m["code"]: m for m in slip["matches"]}
+        self.assertEqual(set(by_code), {"FUT_A", "FUT_B", "FUT_ALT"})
+        self.assertEqual((by_code["FUT_ALT"]["pick"], by_code["FUT_ALT"]["selection"], by_code["FUT_ALT"]["odds"]), ("alt_bet", "KG VAR", 1.70))
+        self.assertEqual(slip["total_odds"], round(1.5 * 1.5 * 1.7, 2))
+        # Lig isabeti ağırlığı: güveni daha düşük olsa da başarılı ligdeki maç daha yüksek puan alır
+        self.assertGreater(by_code["FUT_A"]["coupon_score"], by_code["FUT_B"]["coupon_score"])
+        self.assertIn("Yüksek lig başarısı", by_code["FUT_A"]["league_note"])
+        self.assertIn("Düşük lig başarısı", by_code["FUT_B"]["league_note"])
+
+        # Kurallar Ayarlar'dan dinamik okunur: min maç oranı 1.60 -> sadece 2. tercihli maç kalır
+        self.client.post("/api/admin/settings/coupon_odds", json={"min_match_odds": 1.60, "min_coupon_odds": 1.50})
+        res = self.client.post("/api/coupon/generate", json={"match_count": 1, "today_only": False}).get_json()
+        self.assertEqual(([m["code"] for m in res["matches"]], res["odds_rules"]["min_match_odds"]), (["FUT_ALT"], 1.60))
+        # Min kupon oranı 2.00 -> 1.70'lik tek maçlı kupon kurulamaz; istek kuralları ezemez
+        self.client.post("/api/admin/settings/coupon_odds", json={"min_match_odds": 1.60, "min_coupon_odds": 2.00})
+        res = self.client.post("/api/coupon/generate", json={"match_count": 1, "today_only": False, "min_total_odds": 1.01}).get_json()
+        self.assertFalse(res["success"])
+        self.assertIn("2.00", res["message"])
+        self.assertEqual(self.client.post("/api/coupon/generate", json={"match_count": "x"}).status_code, 400)
+
+    def test_select_combination_respects_min_total_and_league_limit(self):
+        def item(code, league, odds, score):
+            return {"match": {"code": code, "league_id": league}, "pick": {"odds": odds}, "score": score}
+        scored = [item("a", 1, 1.3, 90), item("b", 1, 1.3, 85), item("c", 1, 1.4, 80), item("d", 2, 1.6, 50)]
+        codes = lambda combo: [c["match"]["code"] for c in combo]
+        # a+b (1.69) ve a+c (1.82) toplam 2.00'ın altında: puanı en yüksek geçerli ikili a+d (2.08)
+        self.assertEqual(codes(coupon.select_combination(scored, 2, 2.0)), ["a", "d"])
+        # 3 maçta lig sınırı (2) korunur: a, b, d
+        self.assertEqual(codes(coupon.select_combination(scored, 3, 2.0)), ["a", "b", "d"])
+        self.assertIsNone(coupon.select_combination(scored, 2, 5.0))
+
+    def test_played_coupon_saved_and_evaluated_from_results(self):
+        def bet(selection, odds, market):
+            return {"market": market, "selection": selection, "odds": odds, "confidence": 70, "reason": "r"}
+        with database.db_session(TEST_DB) as conn:
+            m1 = database.save_match(conn, "K1", "A", "B", "Lig", "01.01.2099", "20:00")
+            database.save_prediction(conn, m1, {"predicted_score": "2-0", "best_bet": bet("MS 1", 1.50, "ft")})
+            m2 = database.save_match(conn, "K2", "C", "D", "Lig", "01.01.2099", "21:00")
+            database.save_prediction(conn, m2, {"predicted_score": "1-1", "best_bet": bet("MS 0", 1.10, "ft"),
+                                                "alt_bet": bet("KG VAR", 1.80, "kg")})
+
+        # Oran / tercih istemciden alınmaz: maçın kayıtlı tahmininden okunur
+        res = self.client.post("/api/coupons", json={"strategy": "banko", "matches": [
+            {"id": m1, "pick": "best_bet", "odds": 99}, {"id": m2, "pick": "alt_bet"}]}).get_json()
+        self.assertTrue(res["success"])
+        data = self.client.get("/api/coupons").get_json()
+        saved = data["coupons"][0]
+        self.assertEqual((saved["status"], saved["total_odds"]), ("pending", 2.7))
+        self.assertEqual([(i["selection"], i["odds"]) for i in saved["items"]], [("MS 1", 1.5), ("KG VAR", 1.8)])
+        self.assertEqual(data["summary"], {"total": 1, "won": 0, "lost": 0, "pending": 1, "win_rate": None})
+
+        # Skorlar gelince otomatik değerlendirilir: biri tuttu -> hâlâ bekliyor; ikisi de tuttu -> tuttu
+        with database.db_session(TEST_DB) as conn:
+            database.save_result(conn, m1, 1, 0, 2, 0)
+        self.assertEqual(self.client.get("/api/coupons").get_json()["coupons"][0]["status"], "pending")
+        with database.db_session(TEST_DB) as conn:
+            database.save_result(conn, m2, 0, 0, 1, 1)
+        data = self.client.get("/api/coupons").get_json()
+        self.assertEqual(data["coupons"][0]["status"], "won")
+        self.assertEqual([i["result"] for i in data["coupons"][0]["items"]], [True, True])
+        self.assertEqual(data["summary"]["win_rate"], 100.0)
+        # Skor düzeltilip tercih yatarsa kupon da yatar
+        with database.db_session(TEST_DB) as conn:
+            database.save_result(conn, m2, 0, 0, 1, 0)
+        self.assertEqual(self.client.get("/api/coupons").get_json()["coupons"][0]["status"], "lost")
+
+        # Geçersiz istekler
+        for body in ({"matches": []}, {"matches": [{"id": m1, "pick": "x"}]},
+                     {"matches": [{"id": m1, "pick": "alt_bet"}]}, {"matches": [{"id": m1, "pick": "best_bet"}] * 2}):
+            self.assertEqual(self.client.post("/api/coupons", json=body).status_code, 400, body)
+
+        coupon_id = saved["id"]
+        self.assertTrue(self.client.delete(f"/api/coupons/{coupon_id}").get_json()["success"])
+        self.assertEqual(self.client.delete(f"/api/coupons/{coupon_id}").status_code, 404)
+        self.assertEqual(self.client.get("/api/coupons").get_json()["coupons"], [])
+
+    def test_exclude_played_matches_from_new_coupons(self):
+        with database.db_session(TEST_DB) as conn:
+            ids = []
+            for code in ("P1", "P2", "P3"):
+                mid = database.save_match(conn, code, f"{code} Ev", f"{code} Dep", f"Lig {code}", "01.01.2099", "20:00")
+                database.save_prediction(conn, mid, {"predicted_score": "1-0", "best_bet": {
+                    "market": "ft", "selection": "MS 1", "odds": 1.50, "confidence": 70, "reason": "r"}})
+                ids.append(mid)
+        self.client.post("/api/coupons", json={"strategy": "banko", "matches": [{"id": ids[0], "pick": "best_bet"}]})
+
+        def generate(exclude):
+            with mock.patch.multiple(config, MIN_MATCH_ODDS=1.30, MIN_COUPON_TOTAL_ODDS=1.10):
+                return self.client.post("/api/coupon/generate", json={"match_count": 3, "today_only": False,
+                                                                      "exclude_played": exclude}).get_json()
+        # İşaret: oynanan maç listede ve kupon önerisinde 'played'
+        played = {m["code"]: m["played"] for m in self.client.get("/api/matches/unfinished").get_json()["matches"]}
+        self.assertEqual(played, {"P1": True, "P2": False, "P3": False})
+        included = generate(False)
+        self.assertTrue(included["success"])
+        self.assertEqual({m["code"]: m["played"] for m in included["matches"]}, {"P1": True, "P2": False, "P3": False})
+        # Seçenek açıkken oynanan maç gelmez: 3 maçlık kupon için 2 uygun maç kalır
+        excluded = generate(True)
+        self.assertFalse(excluded["success"])
+        self.assertIn("(2/3)", excluded["message"])
+        # Kupon silinince işaret de kalkar
+        coupon_id = self.client.get("/api/coupons").get_json()["coupons"][0]["id"]
+        self.client.delete(f"/api/coupons/{coupon_id}")
+        self.assertTrue(generate(True)["success"])
+
+    def test_leagues_accuracy_endpoint(self):
+        res = self.client.get("/api/leagues/accuracy")
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data["success"])
+        self.assertIn("summary", data)
+        self.assertIn("leagues", data)
+        summary = data["summary"]
+        for key in ("best_bet_accuracy", "alt_bet_accuracy", "best_bet_total", "alt_bet_total", "total_evaluated_matches"):
+            self.assertIn(key, summary)
+        self.assertIsInstance(data["leagues"], list)
+
+    def test_predicted_ht_score_flow(self):
+        with database.db_session(TEST_DB) as conn:
+            mid = database.save_match(conn, "HT_SCORE_1", "Takım A", "Takım B", "Süper Lig", "01.01.2099", "20:00")
+            database.save_prediction(conn, mid, {
+                "predicted_ht_result": "İY 1",
+                "predicted_ht_score": "1-0",
+                "predicted_ft_result": "MS 1",
+                "predicted_score": "2-1",
+                "confidence_score": 85
+            })
+            preds = database.get_match_predictions(conn, mid)
+            self.assertEqual(len(preds), 1)
+            pred = preds[0]
+            self.assertEqual(pred["predicted_ht_score"], "1-0")
+
+            # Skor kaydet ve değerlendir
+            database.save_result(conn, mid, ht_home=1, ht_away=0, ft_home=2, ft_away=1)
+            result = database.get_match_result(conn, mid)
+            ev = rules.evaluate_prediction(pred, result)
+            self.assertTrue(ev["ht"])
+            self.assertTrue(ev["ht_score"])
+            self.assertTrue(ev["score"])
 
 if __name__ == "__main__":
     unittest.main()

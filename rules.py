@@ -4,7 +4,7 @@
 Futbol: Alt/Üst sınırı sabit 3 goldür, KG uygulanır.
 Basketbol: Alt/Üst ve KG yoktur; bunun yerine maç sonu toplam sayı tahmini yapılır.
 """
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 FOOTBALL = "FOOTBALL"
 BASKETBALL = "BASKETBALL"
@@ -61,31 +61,67 @@ def normalize_selection(selection: Optional[str]) -> str:
             text = f"{prefix} {text[len(prefix):]}"
     return text
 
-# Gemini'nin "en güçlü tercih" (⭐) olarak seçebileceği marketler: anahtar -> (tahmin alanı, gösterim adı)
-BEST_BET_MARKETS = {
-    "ft": ("predicted_ft_result", "Maç Sonu"),
-    "ht": ("predicted_ht_result", "İlk Yarı"),
-    "over_under": ("predicted_over_under_3", "3 Gol Alt/Üst"),
-    "kg": ("predicted_kg", "Karşılıklı Gol"),
+# ⭐ En güçlü tercih ve 2. tercih adayları: market anahtarı -> (oran tablosundaki market adı, {bülten seçeneği: gösterim etiketi}, ad)
+# Futbolda ALT / ÜST, 3 gol kuralı nedeniyle 3.5 baremine karşılık gelir (ÜST = 4+ gol).
+# Çifte Şans sadece 2. tercih adayıdır (⭐ en güçlü tercih, eskisi gibi Gemini'nin kendi tahmin marketlerinden seçilir).
+BET_OPTIONS = {
+    "ft": ("Maç Sonucu", {"MS 1": "MS 1", "MS 0": "MS 0", "MS 2": "MS 2"}, "Maç Sonu"),
+    "ht": ("İlk Yarı Sonucu", {"İY 1": "İY 1", "İY 0": "İY 0", "İY 2": "İY 2"}, "İlk Yarı"),
+    "over_under": ("3.5 Gol Alt/Üst", {"3.5 Alt": "ALT", "3.5 Üst": "ÜST"}, "3 Gol Alt/Üst"),
+    "kg": ("Karşılıklı Gol", {"KG VAR": "KG VAR", "KG YOK": "KG YOK"}, "Karşılıklı Gol"),
+    "dc": ("Çifte Şans", {"1-X": "1-X", "1-2": "1-2", "X-2": "X-2"}, "Çifte Şans"),
 }
-BASKETBALL_BEST_BET_MARKETS = ("ft", "ht")
+BASKETBALL_BET_MARKETS = ("ft", "ht")
+BEST_BET_MARKETS = ("ft", "ht", "over_under", "kg")
 
-def best_bet_market_key(market: Optional[str], sport_type: str = FOOTBALL) -> Optional[str]:
-    """Gemini'nin yazdığı market adını ('MS', 'İlk Yarı', 'ALT/ÜST', 'KG' ...) anahtara çevirir; sporda geçersizse None."""
-    text = normalize_selection(market)
-    if text.startswith("KG") or "KARSILIKLI" in text:
-        key = "kg"
-    elif "ALT" in text or "UST" in text:
-        key = "over_under"
-    elif text.startswith("IY") or text.startswith("ILK"):
-        key = "ht"
-    elif text.startswith("MS") or text.startswith("MAC"):
-        key = "ft"
-    else:
+def bet_candidates(odds: List[Dict[str, Any]], sport_type: str = FOOTBALL, min_odds: float = 0.0,
+                   markets: Optional[Sequence[str]] = None) -> List[Dict[str, Any]]:
+    """
+    Kayıtlı oranlardan tercih adaylarını çıkarır: [{"market", "selection", "market_label", "odds"}].
+    Sadece oranı min_odds ve üstü olan seçenekler döner; markets verilirse sadece o marketler (basketbolda sadece MS ve İY).
+    """
+    markets = tuple(markets or BET_OPTIONS)
+    if is_basketball(sport_type):
+        markets = tuple(k for k in markets if k in BASKETBALL_BET_MARKETS)
+    by_market_option = {(o.get("market_name"), o.get("option_name")): o.get("odds_value") for o in odds}
+    candidates = []
+    for key in markets:
+        market_name, options, market_label = BET_OPTIONS[key]
+        for option, label in options.items():
+            value = by_market_option.get((market_name, option))
+            if value and value >= min_odds:
+                candidates.append({"market": key, "selection": label, "market_label": market_label, "odds": value})
+    return candidates
+
+def selection_odds(odds: List[Dict[str, Any]], market: Optional[str], selection: Optional[str]) -> Optional[float]:
+    """Bir ⭐ seçimin bültendeki oranı (eski tahminlerde kayıtlı oran yoksa gösterim için)."""
+    if market not in BET_OPTIONS or not selection:
         return None
-    if is_basketball(sport_type) and key not in BASKETBALL_BEST_BET_MARKETS:
+    market_name, options, _ = BET_OPTIONS[market]
+    target = normalize_selection(selection)
+    option = next((opt for opt, label in options.items() if normalize_selection(label) == target), None)
+    return next((o.get("odds_value") for o in odds if o.get("market_name") == market_name and o.get("option_name") == option), None)
+
+def selection_won(market: Optional[str], selection: Optional[str], result: Dict[str, Any]) -> Optional[bool]:
+    """Bir seçimin (örn. 'ft' / 'MS 0', 'dc' / '1-X', 'over_under' / 'ÜST') maç sonucunda tutup tutmadığı; değerlendirilemezse None."""
+    ft_h, ft_a = result.get("ft_home_score"), result.get("ft_away_score")
+    ht_h, ht_a = result.get("ht_home_score"), result.get("ht_away_score")
+    sel = normalize_selection(selection)
+    if ft_h is None or ft_a is None or not sel or market not in BET_OPTIONS:
         return None
-    return key
+    if market == "ft":
+        return sel == normalize_selection(result_label("MS", ft_h, ft_a))
+    if market == "ht":
+        if ht_h is None or ht_a is None:
+            return None
+        return sel == normalize_selection(result_label("İY", ht_h, ht_a))
+    if market == "over_under":
+        return ("UST" in sel) == is_over_3_goals(ft_h, ft_a)
+    if market == "kg":
+        return ("VAR" in sel) == is_kg_var(ft_h, ft_a)
+    # Çifte şans: '1-X' deplasman kazanmazsa, 'X-2' ev sahibi kazanmazsa, '1-2' beraberlik olmazsa tutar
+    outcome = {"MS 1": "1", "MS 0": "X", "MS 2": "2"}[result_label("MS", ft_h, ft_a)]
+    return outcome in sel.split("-")
 
 def evaluate_prediction(prediction: Dict[str, Any], result: Dict[str, Any],
                         sport_type: str = FOOTBALL) -> Dict[str, Optional[bool]]:
@@ -93,15 +129,18 @@ def evaluate_prediction(prediction: Dict[str, Any], result: Dict[str, Any],
     Bir tahmini gerçek maç sonucuyla karşılaştırır. Değerlendirilemeyen alanlar None döner
     (örn. ilk yarı skoru yoksa 'ht', basketbolda 'over_under' ve 'kg').
     Basketbolda 'total_diff': tahmini toplam sayı ile gerçek toplam arasındaki mutlak fark.
-    'best_bet': Gemini'nin en güçlü tercihi (best_bet_market) tuttu mu; tercih yoksa None.
+    'best_bet': Gemini'nin ⭐ en güçlü tercihi tuttu mu; 'alt_bet': 2. tercih (düşük oranlı ⭐ yerine) tuttu mu; tercih yoksa None.
     prediction: predicted_* alanları, result: ht_/ft_ home/away skor alanları.
     """
     ht_h, ht_a = result.get("ht_home_score"), result.get("ht_away_score")
     ft_h, ft_a = result["ft_home_score"], result["ft_away_score"]
 
     ht = None
+    ht_score = None
     if ht_h is not None and ht_a is not None:
         ht = is_result_prediction_correct(result_label("İY", ht_h, ht_a), prediction.get("predicted_ht_result"), "İY")
+        if prediction.get("predicted_ht_score"):
+            ht_score = is_score_prediction_correct(ht_h, ht_a, prediction.get("predicted_ht_score"))
 
     total_diff = None
     if is_basketball(sport_type):
@@ -114,11 +153,14 @@ def evaluate_prediction(prediction: Dict[str, Any], result: Dict[str, Any],
 
     evaluation = {
         "ht": ht,
+        "ht_score": ht_score,
         "ft": is_result_prediction_correct(result_label("MS", ft_h, ft_a), prediction.get("predicted_ft_result"), "MS"),
         "over_under": over_under,
         "kg": kg,
         "score": is_score_prediction_correct(ft_h, ft_a, prediction.get("predicted_score")),
         "total_diff": total_diff,
     }
-    evaluation["best_bet"] = evaluation.get(prediction.get("best_bet_market")) if prediction.get("best_bet_market") in BEST_BET_MARKETS else None
+    # Tercihler tahminden farklı bir seçim olabilir (örn. tahmin MS 1, 2. tercih KG VAR); seçimin kendisi değerlendirilir
+    evaluation["best_bet"] = selection_won(prediction.get("best_bet_market"), prediction.get("best_bet_selection"), result)
+    evaluation["alt_bet"] = selection_won(prediction.get("alt_bet_market"), prediction.get("alt_bet_selection"), result)
     return evaluation

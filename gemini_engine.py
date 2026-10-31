@@ -29,27 +29,33 @@ class MatchPrediction(BaseModel):
     """Futbol tahmini."""
     analysis_summary: str = Field(description="3-4 cümlelik Türkçe detaylı taktiksel analiz ve değerlendirme")
     predicted_ht_result: str = Field(description="İlk Yarı Tahmini: İY 1, İY 0 veya İY 2")
+    predicted_ht_score: str = Field(description="Tahmini İLK YARI skoru (Örn: '1-0', '0-0', '1-1')")
     predicted_ft_result: str = Field(description="Maç Sonu Tahmini: MS 1, MS 0 veya MS 2")
     predicted_over_under_3: str = Field(description="3 Gol Sınırına Göre Alt/Üst Tahmini: Toplam gol >= 4 ise 'ÜST', toplam gol <= 3 ise 'ALT'")
     predicted_kg: str = Field(description="Karşılıklı Gol Tahmini: 'KG VAR' veya 'KG YOK'")
-    predicted_score: str = Field(description="Tahmini maç skoru (Örn: '2-1', '1-1', '3-0')")
+    predicted_score: str = Field(description="Tahmini maç sonu skoru (Örn: '2-1', '1-1', '3-0')")
     confidence_score: int = Field(description="Tahminin gerçekleşme olasılığına dair 1 ile 100 arasında integer güven skoru")
     # Zorunlu alanlar: şemada 'required' olarak işaretlenir, böylece Gemini her yanıtta doldurur
-    best_bet_market: str = Field(description="Tahminlerin arasından EN ÇOK güvendiğin tek market: 'MS', 'İY', 'ALT/ÜST' veya 'KG'")
+    best_bet_selection: str = Field(description="EN GÜÇLÜ TERCİH: listedeki (Çifte Şans hariç) gerçekleşeceğine EN ÇOK güvendiğin seçenek, AYNEN yazımıyla (örn. 'MS 1', 'KG VAR', 'ALT')")
     best_bet_confidence: int = Field(description="En güçlü tercihin gerçekleşme olasılığı (1-100)")
     best_bet_reason: str = Field(description="En güçlü tercihin 1 cümlelik Türkçe gerekçesi")
+    alt_bet_selection: str = Field(description="2. TERCİH: en güçlü tercihin oranı eşiğin altındaysa, oranı eşik ve üstü seçenekler arasından EN ÇOK güvendiğin seçenek (AYNEN yazımıyla); gerek yoksa veya uygun seçenek yoksa 'YOK'")
+    alt_bet_confidence: int = Field(description="2. tercihin gerçekleşme olasılığı (1-100); 'YOK' ise 0")
 
 class BasketballPrediction(BaseModel):
     """Basketbol tahmini: beraberlik, karşılıklı gol ve Alt/Üst yoktur; bunun yerine maç sonu toplam sayı tahmin edilir."""
     analysis_summary: str = Field(description="3-4 cümlelik Türkçe detaylı taktiksel analiz ve değerlendirme")
     predicted_ht_result: str = Field(description="İlk Yarı Tahmini: İY 1, İY 0 veya İY 2")
+    predicted_ht_score: str = Field(description="Tahmini İLK YARI skoru (Örn: '42-38', '45-45')")
     predicted_ft_result: str = Field(description="Maç Sonu Tahmini (uzatmalar dahil, beraberlik yok): MS 1 veya MS 2")
     predicted_score: str = Field(description="Tahmini maç skoru, uzatmalar dahil (Örn: '112-105')")
     predicted_total_points: int = Field(description="Maç Sonu Toplam Sayı tahmini: iki takımın sayılarının toplamı, uzatmalar dahil (Örn: 217)")
     confidence_score: int = Field(description="Tahminin gerçekleşme olasılığına dair 1 ile 100 arasında integer güven skoru")
-    best_bet_market: str = Field(description="Tahminlerin arasından EN ÇOK güvendiğin tek market: 'MS' veya 'İY'")
+    best_bet_selection: str = Field(description="EN GÜÇLÜ TERCİH: listedeki (Çifte Şans hariç) gerçekleşeceğine EN ÇOK güvendiğin seçenek, AYNEN yazımıyla (örn. 'MS 1', 'KG VAR', 'ALT')")
     best_bet_confidence: int = Field(description="En güçlü tercihin gerçekleşme olasılığı (1-100)")
     best_bet_reason: str = Field(description="En güçlü tercihin 1 cümlelik Türkçe gerekçesi")
+    alt_bet_selection: str = Field(description="2. TERCİH: en güçlü tercihin oranı eşiğin altındaysa, oranı eşik ve üstü seçenekler arasından EN ÇOK güvendiğin seçenek (AYNEN yazımıyla); gerek yoksa veya uygun seçenek yoksa 'YOK'")
+    alt_bet_confidence: int = Field(description="2. tercihin gerçekleşme olasılığı (1-100); 'YOK' ise 0")
 
 def get_gemini_client() -> genai.Client:
     if not config.GEMINI_API_KEY:
@@ -113,10 +119,47 @@ def _format_odds(odds: List[Dict[str, Any]]) -> str:
         for o in ordered[:MAX_ODDS_ROWS]
     )
 
+def _sport_type(match_context: Dict[str, Any]) -> str:
+    return match_context.get("match", {}).get("sport_type", rules.FOOTBALL)
+
+def _best_bet_candidates(match_context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """⭐ en güçlü tercih adayları: Gemini'nin kendi tahmin marketleri (MS, İY, 3 gol ALT/ÜST, KG), oran sınırı yok."""
+    return rules.bet_candidates(match_context.get("odds", []), _sport_type(match_context), markets=rules.BEST_BET_MARKETS)
+
+def _alt_bet_candidates(match_context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """2. tercih adayları: oranı MIN_BEST_BET_ODDS ve üstü tüm seçenekler (Çifte Şans dahil)."""
+    return rules.bet_candidates(match_context.get("odds", []), _sport_type(match_context), config.MIN_BEST_BET_ODDS)
+
+def _format_best_bet_section(match_context: Dict[str, Any]) -> str:
+    """
+    ⭐ en güçlü tercih ve 2. tercih bölümü. Seçenekler oran ve piyasa olasılığıyla verilir: Gemini en çok güvendiği seçimi
+    yazar; o seçimin oranı MIN_BEST_BET_ODDS altındaysa, oranı eşik ve üstü seçenekler arasından bir 2. tercih de yazar.
+    """
+    min_odds = config.MIN_BEST_BET_ODDS
+    candidates = rules.bet_candidates(match_context.get("odds", []), _sport_type(match_context))
+    header = "--- EN GÜÇLÜ TERCİH (best_bet) VE 2. TERCİH (alt_bet) ---"
+    if not candidates:
+        return (f"{header}\nBu maçta uygun oran yok: best_bet_selection için kendi MS tahminini yaz, "
+                "alt_bet_selection alanına 'YOK', alt_bet_confidence için 0 ver.")
+    lines = [f"- {c['selection']} ({c['market_label']}) | Oran {c['odds']:.2f} | Piyasa olasılığı %{100 / c['odds']:.0f}"
+             for c in candidates]
+    return "\n".join([
+        header,
+        "Seçenekler (oran | oranın ima ettiği piyasa olasılığı):",
+        *lines,
+        "1) best_bet: Çifte Şans HARİÇ seçenekler arasından gerçekleşeceğine EN ÇOK güvendiğin TEK seçeneği yaz "
+        "(listedeki yazımıyla AYNEN, örn. 'MS 1', 'ALT'), gerçekleşme olasılığını (best_bet_confidence, 1-100) ve 1 cümlelik gerekçesini (best_bet_reason).",
+        f"2) alt_bet: best_bet seçeneğinin oranı {min_odds:.2f} altındaysa, oranı {min_odds:.2f} ve üstü seçenekler (Çifte Şans dahil) "
+        "arasından gerçekleşeceğine EN ÇOK güvendiğin TEK seçeneği alt_bet_selection'a, olasılığını alt_bet_confidence'a yaz. "
+        f"best_bet oranı {min_odds:.2f} ve üstüyse veya uygun seçenek yoksa alt_bet_selection 'YOK', alt_bet_confidence 0 olsun.",
+        "Olasılıkları verilere dayanarak GERÇEKÇİ tahmin et, abartma.",
+    ])
+
 def _data_sections(match_context: Dict[str, Any], score_label: str) -> Dict[str, str]:
     """Maç geçmişi sadece veri kaynağından (iddaa.com / Nesine) gelir; Gemini'den bu verileri araması istenmez."""
     no_last_matches = "Veritabanında son maç verisi yok."
     return {
+        "best_bet": _format_best_bet_section(match_context),
         "odds": _format_odds(match_context.get("odds", [])),
         "h2h": _format_history(match_context.get("h2h"), "Veritabanında ikili mücadele verisi yok."),
         "home_last": _format_history(match_context.get("home_last"), no_last_matches),
@@ -170,9 +213,7 @@ Deplasman Takımı: {away_team}
   Takımların son maçlardaki attığı / yediği sayıları ve puan durumundaki sayı ortalamalarını dikkate al.
 - predicted_score ile predicted_total_points tutarlı olmalı (skordaki iki sayının toplamı = toplam sayı).
 
---- EN GÜÇLÜ TERCİH (best_bet) ---
-Kendi tahminlerin (MS ve İY) arasından gerçekleşeceğine EN ÇOK güvendiğin TEK marketi seç (best_bet_market: 'MS' veya 'İY'),
-gerçekleşme olasılığını (best_bet_confidence, 1-100) ve 1 cümlelik gerekçesini (best_bet_reason) yaz.
+{data["best_bet"]}
 
 Lütfen Google Search ile takımların en güncel durumlarını (sakatlıklar, rotasyon, back-to-back maçlar, teknik direktör açıklamaları) tara ve aşağıdaki JSON formatında profesyonel tahmin oluştur.
 """
@@ -225,10 +266,7 @@ Bu sistemde geleneksel 2.5 baremi yerine KESİNLİKLE 3 GOL KURALI uygulanmaktad
 - Eğer maçta atılacak toplam gol sayısı 3 veya daha az ise (Gol sayısı <= 3): Tahmin kesinlikle "ALT" olmalıdır.
 (Örn: 2-1 veya 3-0 biten maç 3 gol olduğu için ALT kabul edilir; 2-2 veya 3-1 biten maç 4 gol olduğu için ÜST kabul edilir).
 
---- EN GÜÇLÜ TERCİH (best_bet) ---
-Kendi tahminlerin (MS, İY, 3 Gol ALT/ÜST, KG) arasından gerçekleşeceğine EN ÇOK güvendiğin TEK marketi seç
-(best_bet_market: 'MS', 'İY', 'ALT/ÜST' veya 'KG'), gerçekleşme olasılığını (best_bet_confidence, 1-100)
-ve 1 cümlelik gerekçesini (best_bet_reason) yaz. Bu tercih, ilgili markete verdiğin tahminin aynısıdır.
+{data["best_bet"]}
 
 Lütfen Google Search ile takımların en güncel durumlarını (kadro eksikleri, teknik direktör açıklamaları, form grafiği, hava durumu) tara ve aşağıdaki JSON formatında profesyonel tahmin oluştur.
 """
@@ -275,23 +313,36 @@ def _parse_response(response: Any) -> Optional[Dict[str, Any]]:
         return json.loads(response.text)
     return None
 
-def finalize_best_bet(prediction: Dict[str, Any], sport_type: str = rules.FOOTBALL) -> Dict[str, Any]:
+def _pick_candidate(candidates: List[Dict[str, Any]], selection: Optional[str]) -> Optional[Dict[str, Any]]:
+    target = rules.normalize_selection(selection)
+    return next((c for c in candidates if rules.normalize_selection(c["selection"]) == target), None)
+
+def finalize_best_bet(prediction: Dict[str, Any], match_context: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Gemini'nin en güçlü tercihini (⭐) tek bir 'best_bet' sözlüğüne toplar. Seçim, modelin ilgili markete verdiği
-    tahminden alınır (böylece ⭐ tercih tahminle asla çelişmez). Market tanınmazsa veya sporda geçersizse best_bet None olur.
+    Gemini'nin ⭐ en güçlü tercihini ve 2. tercihini doğrulayıp sözlüklere toplar:
+    best_bet = {"market", "selection", "odds", "confidence", "reason"}, alt_bet = {"market", "selection", "odds", "confidence"}.
+    - best_bet: aday listesinde (MS / İY / ALT-ÜST / KG) olmalı; değilse None.
+    - alt_bet: sadece best_bet oranı MIN_BEST_BET_ODDS altındaysa (veya best_bet yoksa) tutulur ve seçimi oranı eşik ve üstü
+      adaylardan olmalı; aksi halde ('YOK' dahil) None.
     """
-    key = rules.best_bet_market_key(prediction.pop("best_bet_market", None), sport_type)
-    confidence = prediction.pop("best_bet_confidence", None)
+    best = _pick_candidate(_best_bet_candidates(match_context), prediction.pop("best_bet_selection", None))
+    best_confidence = prediction.pop("best_bet_confidence", None)
     reason = prediction.pop("best_bet_reason", None)
-    selection = prediction.get(rules.BEST_BET_MARKETS[key][0]) if key else None
-    prediction["best_bet"] = {"market": key, "selection": selection, "confidence": confidence, "reason": reason} if selection else None
+    alt = _pick_candidate(_alt_bet_candidates(match_context), prediction.pop("alt_bet_selection", None))
+    alt_confidence = prediction.pop("alt_bet_confidence", None)
+    prediction.pop("best_bet_market", None)
+
+    prediction["best_bet"] = ({"market": best["market"], "selection": best["selection"], "odds": best["odds"],
+                               "confidence": best_confidence, "reason": reason} if best else None)
+    needs_alt = best is None or best["odds"] < config.MIN_BEST_BET_ODDS
+    prediction["alt_bet"] = ({"market": alt["market"], "selection": alt["selection"], "odds": alt["odds"],
+                              "confidence": alt_confidence} if needs_alt and alt and alt_confidence else None)
     return prediction
 
 def _finalize(prediction: Dict[str, Any], match_context: Dict[str, Any]) -> Dict[str, Any]:
-    sport_type = match_context.get("match", {}).get("sport_type", rules.FOOTBALL)
-    if rules.is_basketball(sport_type):
+    if rules.is_basketball(_sport_type(match_context)):
         finalize_basketball_prediction(prediction)
-    return finalize_best_bet(prediction, sport_type)
+    return finalize_best_bet(prediction, match_context)
 
 def generate_prediction(match_context: Dict[str, Any], model_name: str = DEFAULT_MODEL) -> Dict[str, Any]:
     """
