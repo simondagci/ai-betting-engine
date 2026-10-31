@@ -29,10 +29,11 @@ class MatchPrediction(BaseModel):
     """Futbol tahmini."""
     analysis_summary: str = Field(description="3-4 cümlelik Türkçe detaylı taktiksel analiz ve değerlendirme")
     predicted_ht_result: str = Field(description="İlk Yarı Tahmini: İY 1, İY 0 veya İY 2")
+    predicted_ht_score: str = Field(description="Tahmini İLK YARI skoru (Örn: '1-0', '0-0', '1-1')")
     predicted_ft_result: str = Field(description="Maç Sonu Tahmini: MS 1, MS 0 veya MS 2")
     predicted_over_under_3: str = Field(description="3 Gol Sınırına Göre Alt/Üst Tahmini: Toplam gol >= 4 ise 'ÜST', toplam gol <= 3 ise 'ALT'")
     predicted_kg: str = Field(description="Karşılıklı Gol Tahmini: 'KG VAR' veya 'KG YOK'")
-    predicted_score: str = Field(description="Tahmini maç skoru (Örn: '2-1', '1-1', '3-0')")
+    predicted_score: str = Field(description="Tahmini maç sonu skoru (Örn: '2-1', '1-1', '3-0')")
     confidence_score: int = Field(description="Tahminin gerçekleşme olasılığına dair 1 ile 100 arasında integer güven skoru")
     # Zorunlu alanlar: şemada 'required' olarak işaretlenir, böylece Gemini her yanıtta doldurur
     best_bet_selection: str = Field(description="EN GÜÇLÜ TERCİH: listedeki (Çifte Şans hariç) gerçekleşeceğine EN ÇOK güvendiğin seçenek, AYNEN yazımıyla (örn. 'MS 1', 'KG VAR', 'ALT')")
@@ -45,6 +46,7 @@ class BasketballPrediction(BaseModel):
     """Basketbol tahmini: beraberlik, karşılıklı gol ve Alt/Üst yoktur; bunun yerine maç sonu toplam sayı tahmin edilir."""
     analysis_summary: str = Field(description="3-4 cümlelik Türkçe detaylı taktiksel analiz ve değerlendirme")
     predicted_ht_result: str = Field(description="İlk Yarı Tahmini: İY 1, İY 0 veya İY 2")
+    predicted_ht_score: str = Field(description="Tahmini İLK YARI skoru (Örn: '42-38', '45-45')")
     predicted_ft_result: str = Field(description="Maç Sonu Tahmini (uzatmalar dahil, beraberlik yok): MS 1 veya MS 2")
     predicted_score: str = Field(description="Tahmini maç skoru, uzatmalar dahil (Örn: '112-105')")
     predicted_total_points: int = Field(description="Maç Sonu Toplam Sayı tahmini: iki takımın sayılarının toplamı, uzatmalar dahil (Örn: 217)")

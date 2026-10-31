@@ -14,6 +14,8 @@
         </a>
         <nav class="global-nav" aria-label="Ana menü">
             <button class="global-nav-item active" data-tab="matches" type="button">Maçlar</button>
+            <button class="global-nav-item" data-tab="coupon" type="button">🎟️ Kupon</button>
+            <button class="global-nav-item" data-tab="accuracy" type="button">📊 Tercih İsabetleri</button>
             <button class="global-nav-item" data-tab="admin" type="button">Lig Yönetimi</button>
         </nav>
         <div class="header-meta">Saatler: 🇩🇪 Europe/Berlin</div>
@@ -85,6 +87,238 @@
             </div>
         </section>
 
+        <!-- ==================== KUPON OLUŞTURUCU (AI SMART SLIP) ==================== -->
+        <section id="tab-coupon" hidden>
+            <div class="card" style="margin-bottom:16px;">
+                <div class="page-header" style="border-bottom:none; margin-bottom:0; padding-bottom:0;">
+                    <div class="page-header-top">
+                        <div class="page-header-title-area">
+                            <div class="object-icon" style="background:#e0f2fe; color:#0284c7;">🎟️</div>
+                            <div>
+                                <div class="object-label">Kupon Motoru</div>
+                                <h2 class="page-title">Yapay Zeka Akıllı Kupon (AI Smart Slip)</h2>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <p class="muted" style="margin-top:4px; font-size:13px;">
+                    Analiz edilmiş güncel maçları ve liglerin geçmiş başarı oranlarını (League Historical Weighting) analiz ederek en avantajlı kupon kombinasyonunu oluşturur.
+                </p>
+
+                <!-- Kupon Parametreleri Formu -->
+                <form id="couponForm" style="margin-top:16px; display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:16px; align-items:end; background:var(--bg-subtle, #f8fafc); padding:16px; border-radius:8px; border:1px solid var(--border-color, #e2e8f0);">
+                    <div>
+                        <label style="display:block; font-size:12px; font-weight:700; color:var(--text-muted); margin-bottom:6px;">Maç Sayısı</label>
+                        <input class="input" id="couponMatchCount" type="number" min="1" max="10" value="3" style="width:100%;">
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:12px; font-weight:700; color:var(--text-muted); margin-bottom:6px;">Strateji</label>
+                        <select class="input" id="couponStrategy" style="width:100%;">
+                            <option value="banko" selected>🛡️ Banko (Güvenli Oranlar)</option>
+                            <option value="value">⭐ Değerli (Yüksek EV & F/P)</option>
+                            <option value="surprise">🚀 Sürpriz (Yüksek Oran)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:12px; font-weight:700; color:var(--text-muted); margin-bottom:6px;">Spor Türü</label>
+                        <select class="input" id="couponSport" style="width:100%;">
+                            <option value="" selected>Tümü</option>
+                            <option value="FOOTBALL">⚽ Sadece Futbol</option>
+                            <option value="BASKETBALL">🏀 Sadece Basketbol</option>
+                        </select>
+                    </div>
+                    <div style="padding-bottom:8px;">
+                        <label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; cursor:pointer;">
+                            <input type="checkbox" id="couponTodayOnly" checked style="width:18px; height:18px; cursor:pointer;">
+                            <span>Sadece Bugünün Maçları</span>
+                        </label>
+                        <label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; cursor:pointer; margin-top:8px;"
+                               title="Kayıtlı (oynanan) bir kuponda yer alan maçlar yeni kupona alınmaz">
+                            <input type="checkbox" id="couponExcludePlayed" checked style="width:18px; height:18px; cursor:pointer;">
+                            <span>Oynanan maçı bir daha oynama</span>
+                        </label>
+                    </div>
+                    <div>
+                        <button class="btn btn-brand" id="btnGenerateCoupon" type="submit" style="width:100%; height:38px; font-weight:700;">
+                            🪄 Kupon Oluştur
+                        </button>
+                    </div>
+                </form>
+                <!-- Oran kuralları Ayarlar'dan gelir (tek kaynak); burada sadece gösterilir -->
+                <div class="setting-meta" id="couponRules" style="margin-top:12px;">Oran kuralları yükleniyor...</div>
+            </div>
+
+            <!-- Kupon Sonuç Alanı -->
+            <div id="couponResultArea" hidden>
+                <!-- Kupon Özet Kartı -->
+                <div class="card" style="margin-bottom:16px; border-left:4px solid var(--brand, #0176d3);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px;">
+                        <div>
+                            <div style="font-size:12px; text-transform:uppercase; font-weight:700; color:var(--text-muted);">Önerilen Kupon Özeti</div>
+                            <div style="font-size:24px; font-weight:800; color:var(--brand, #0176d3); margin-top:2px;" id="couponTotalOdds">Toplam Oran: —</div>
+                            <div class="cell-sub" id="couponSummarySub">Ortalama Güven: — • 3 Maç</div>
+                        </div>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                            <button class="btn btn-sm btn-brand" id="btnSaveCoupon" type="button" title="Bu kuponu oynadım: kaydet, skorlar gelince otomatik değerlendirilsin">💾 Oynadım, Kaydet</button>
+                            <button class="btn btn-sm" id="btnCopyCoupon" type="button" title="Kuponu panoya kopyala">📋 Kuponu Kopyala</button>
+                            <button class="btn btn-sm btn-brand" id="btnAiCouponSummary" type="button" title="Gemini yapay zekasından kupon için özet yorum al">🤖 AI Kupon Yorumu Al</button>
+                        </div>
+                    </div>
+
+                    <!-- AI Yorum Kutusu -->
+                    <div id="couponAiCommentBox" style="margin-top:16px; padding:12px 16px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; font-size:13px; color:#166534;" hidden>
+                        <div style="font-weight:700; margin-bottom:4px; display:flex; align-items:center; gap:6px;">
+                            <span>🤖</span> <span>Gemini Strateji Değerlendirmesi:</span>
+                        </div>
+                        <div id="couponAiCommentText" style="line-height:1.5;"></div>
+                    </div>
+                </div>
+
+                <!-- Seçilen Maçlar Listesi -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">Seçilen Maçlar ve Tercihler</div>
+                    </div>
+                    <div class="table-wrap">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Maç Kodu</th>
+                                    <th>Tarih / Saat</th>
+                                    <th>Karşılaşma</th>
+                                    <th>Lig</th>
+                                    <th>Önerilen Tercih</th>
+                                    <th class="num">Oran</th>
+                                    <th class="num">Güven %</th>
+                                    <th>Lig AI Başarısı (Ağırlık)</th>
+                                    <th class="num">Kupon Puanı</th>
+                                    <th>Detay</th>
+                                </tr>
+                            </thead>
+                            <tbody id="couponMatchesBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Kupon Boş Durum -->
+            <div class="card" id="couponEmptyState" style="text-align:center; padding:48px 24px;">
+                <div style="font-size:48px; margin-bottom:12px;">🎟️</div>
+                <h3 style="font-size:18px; font-weight:700; margin-bottom:6px;">Akıllı Kupon Oluşturun</h3>
+                <p class="muted" style="max-width:540px; margin:0 auto 16px;">
+                    Yukarıdaki parametreleri seçip "Kupon Oluştur" butonuna basarak, yapay zekanın en güvendiği ve geçmişte en başarılı olduğu liglerdeki maçlardan oluşan kombine kuponunuzu anında hazırlayabilirsiniz.
+                </p>
+            </div>
+
+            <!-- Oynanan Kuponlar: tuttu / yattı durumu maç skorlarından otomatik hesaplanır -->
+            <div class="card" style="margin-top:16px;">
+                <div class="card-header">
+                    <div class="card-title">🧾 Oynanan Kuponlar</div>
+                    <div class="setting-meta" id="playedCouponsSummary"></div>
+                </div>
+                <div class="table-wrap">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Kayıt</th>
+                                <th>Strateji</th>
+                                <th>Maçlar ve Tercihler</th>
+                                <th class="num">Toplam Oran</th>
+                                <th>Durum</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="playedCouponsBody">
+                            <tr><td class="empty-state" colspan="6">Yükleniyor...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ==================== TERCİH İSABETLERİ (LİG BAŞARI ORANLARI) ==================== -->
+        <section id="tab-accuracy" hidden>
+            <!-- KPI Kartları -->
+            <div class="kpi-row" style="margin-bottom:16px;">
+                <div class="card kpi-card">
+                    <div class="kpi-label">⭐ Tercih 1 (En Güçlü Tercih) İsabeti</div>
+                    <div class="kpi-value text-brand" id="accKpiBestBetPct">—</div>
+                    <div class="kpi-sub" id="accKpiBestBetSub">Yükleniyor...</div>
+                </div>
+                <div class="card kpi-card">
+                    <div class="kpi-label">🎯 2. Tercih (alt_bet) İsabeti</div>
+                    <div class="kpi-value" id="accKpiAltBetPct" style="color:#0284c7;">—</div>
+                    <div class="kpi-sub" id="accKpiAltBetSub">Yükleniyor...</div>
+                </div>
+                <div class="card kpi-card">
+                    <div class="kpi-label">🏆 En Başarılı Lig</div>
+                    <div class="kpi-value" id="accKpiTopLeague" style="font-size:18px; line-height:1.3; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">—</div>
+                    <div class="kpi-sub" id="accKpiTopLeagueSub">—</div>
+                </div>
+                <div class="card kpi-card">
+                    <div class="kpi-label">Sonuçlanan Lig / Maç</div>
+                    <div class="kpi-value" id="accKpiCounts">—</div>
+                    <div class="kpi-sub" id="accKpiCountsSub">Değerlendirilen veriler</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="page-header" style="border-bottom:none; margin-bottom:0; padding-bottom:8px;">
+                    <div class="page-header-top">
+                        <div class="page-header-title-area">
+                            <div class="object-icon" style="background:#fef3c7; color:#d97706;">📊</div>
+                            <div>
+                                <div class="object-label">Performans Analizi</div>
+                                <h2 class="page-title">Liglere Göre Tercih Başarı Oranları</h2>
+                            </div>
+                        </div>
+                        <button class="btn btn-sm" id="btnRefreshAccuracy" type="button">↻ Yenile</button>
+                    </div>
+                </div>
+                <p class="muted" style="margin:4px 0 16px 0; font-size:13px;">
+                    Yapay zekanın maçlar için belirlediği Tercih 1 (⭐ en güçlü tercih) ve 2. Tercih (alt_bet) seçimlerinin lig bazındaki tutma ve gerçekleşme oranları.
+                </p>
+
+                <!-- Filtre ve Arama Araç Çubuğu -->
+                <div class="toolbar" style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                    <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; flex:1; max-width:600px;">
+                        <input class="input input-search" id="accuracySearch" type="search" placeholder="Lig adı ara..." aria-label="Lig ara" style="flex:1; min-width:200px;">
+                        <select class="input" id="accuracySportFilter" style="width:140px;">
+                            <option value="ALL" selected>Tüm Sporlar</option>
+                            <option value="FOOTBALL">⚽ Futbol</option>
+                            <option value="BASKETBALL">🏀 Basketbol</option>
+                        </select>
+                    </div>
+                    <label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; cursor:pointer;">
+                        <input type="checkbox" id="accuracyOnlyEvaluated" checked style="width:18px; height:18px; cursor:pointer;">
+                        <span>Sadece Sonucu Olan Ligleri Göster</span>
+                    </label>
+                </div>
+
+                <!-- Veri Tablosu -->
+                <div class="table-wrap">
+                    <table class="data-table">
+                        <thead id="accuracyHead">
+                            <tr>
+                                <th class="sortable" data-sort="name">Lig / Turnuva</th>
+                                <th class="sortable" data-sort="sport_type">Spor</th>
+                                <th class="num sortable" data-sort="evaluated" title="Sonucu girilmiş ve tahmini olan maç sayısı">Sonuçlanan</th>
+                                <th class="sortable" data-sort="best_bet_accuracy" style="min-width:200px;" title="Tercih 1 (⭐ En Güçlü Tercih) tutma oranı">⭐ Tercih 1 İsabeti</th>
+                                <th class="sortable" data-sort="alt_bet_accuracy" style="min-width:180px;" title="2. Tercih tutma oranı">🎯 2. Tercih İsabeti</th>
+                                <th class="center sortable" data-sort="best_bet_accuracy">Başarı Seviyesi</th>
+                                <th class="center">Kupon Ağırlığı</th>
+                                <th class="center sortable" data-sort="gemini_analysis">Gemini İzni</th>
+                            </tr>
+                        </thead>
+                        <tbody id="accuracyBody">
+                            <tr><td class="empty-state" colspan="8">Yükleniyor...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="list-footer" id="accuracyFooter"></div>
+            </div>
+        </section>
+
         <!-- ==================== LİG YÖNETİMİ (ADMIN) ==================== -->
         <section id="tab-admin" hidden>
           <div class="setup-layout">
@@ -151,18 +385,18 @@
                 </div>
                 <div class="table-wrap">
                     <table class="data-table">
-                        <thead>
+                        <thead id="leaguesHead">
                             <tr>
-                                <th>ID</th>
-                                <th>Lig / Turnuva</th>
-                                <th>Spor</th>
-                                <th class="num">Toplam Maç</th>
-                                <th class="num">Bitmemiş</th>
-                                <th class="num">Analizli</th>
-                                <th class="num" title="Sonucu girilmiş ve Gemini tahmini olan maç sayısı">Değerlendirilen</th>
-                                <th class="num" title="Gemini'nin en güçlü tercihinin (⭐) tutma oranı">⭐ İsabet</th>
-                                <th class="num" title="2. tercihin (⭐ oranı düşükken önerilen) tutma oranı">2. Tercih İsabet</th>
-                                <th class="center">Gemini İzni</th>
+                                <th class="sortable" data-sort="id">ID</th>
+                                <th class="sortable" data-sort="name">Lig / Turnuva</th>
+                                <th class="sortable" data-sort="sport_type">Spor</th>
+                                <th class="num sortable" data-sort="total_matches">Toplam Maç</th>
+                                <th class="num sortable" data-sort="unfinished_matches">Bitmemiş</th>
+                                <th class="num sortable" data-sort="analyzed_matches">Analizli</th>
+                                <th class="num sortable" data-sort="evaluated" title="Sonucu girilmiş ve Gemini tahmini olan maç sayısı">Değerlendirilen</th>
+                                <th class="num sortable" data-sort="best_bet_accuracy" title="Gemini'nin en güçlü tercihinin (⭐) tutma oranı">⭐ İsabet</th>
+                                <th class="num sortable" data-sort="alt_bet_accuracy" title="2. tercihin (⭐ oranı düşükken önerilen) tutma oranı">2. Tercih İsabet</th>
+                                <th class="center sortable" data-sort="gemini_analysis">Gemini İzni</th>
                                 <th></th>
                             </tr>
                         </thead>
@@ -200,6 +434,40 @@
             </div>
 
             <div class="card">
+                <div class="card-header"><div class="card-title">🎟️ Kupon Motoru Oran Sınırları</div></div>
+                <div class="card-body">
+                    <p class="setting-desc" style="margin-bottom:16px;">
+                        Kupon motorunun otomatik seçim yaparken uygulayacağı minimum oran sınırlarıdır. Bu değerleri panelden güncelleyebilir veya .env varsayılanına sıfırlayabilirsiniz.
+                    </p>
+                    <form id="couponSettingsForm" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:16px; align-items:end; background:var(--bg-subtle, #f8fafc); padding:16px; border-radius:8px; border:1px solid var(--border-color, #e2e8f0);">
+                        <div>
+                            <label style="display:block; font-size:12px; font-weight:700; color:var(--text-muted); margin-bottom:6px;">
+                                Min. Maç Oranı
+                            </label>
+                            <input class="input" id="settingMinMatchOdds" type="number" step="0.05" min="1.01" max="10.00" required style="width:100%;">
+                            <div class="cell-sub" style="margin-top:4px;">⭐ tercihin oranı bunun altındaysa 2. tercih kullanılır; ikisi de altındaysa maç kupona alınmaz</div>
+                        </div>
+                        <div>
+                            <label style="display:block; font-size:12px; font-weight:700; color:var(--text-muted); margin-bottom:6px;">
+                                Min. Toplam Kupon Oranı
+                            </label>
+                            <input class="input" id="settingMinCouponOdds" type="number" step="0.10" min="1.01" max="50.00" required style="width:100%;">
+                            <div class="cell-sub" style="margin-top:4px;">Kombine kuponun toplam hedef oranı</div>
+                        </div>
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn btn-brand" id="btnSaveCouponSettings" type="submit" style="height:38px; font-weight:700;">
+                                Kaydet
+                            </button>
+                            <button class="btn" id="btnResetCouponSettings" type="button" style="height:38px;">
+                                Varsayılana Dön
+                            </button>
+                        </div>
+                    </form>
+                    <div class="setting-meta" id="couponSettingsMeta" style="margin-top:12px;">Yükleniyor...</div>
+                </div>
+            </div>
+
+            <div class="card">
                 <div class="card-header"><div class="card-title">📄 Diğer Ayarlar (.env)</div></div>
                 <div class="card-body">
                     <p class="muted" style="margin-bottom:8px;">Bu değerler <code>.env</code> dosyasından okunur; değiştirmek için dosyayı düzenleyip sunucuyu yeniden başlatın.</p>
@@ -224,17 +492,22 @@
         const state = {
             matches: [],
             leagues: [],
+            accuracyLeagues: [],
             view: 'UNFINISHED',
             subFilter: 'ALL',
             sort: { key: null, dir: 1 },
+            leagueSort: { key: 'unfinished_matches', dir: -1 },
+            accuracySort: { key: 'best_bet_accuracy', dir: -1 },
             geminiEnabled: null   // /api/stats yüklenene kadar bilinmiyor
         };
 
         // ==================== TABS ====================
-        // URL hash: '' (Maçlar), '#admin' (Ligler & Bülten), '#admin/settings' (Ayarlar)
+        // URL hash: '' (Maçlar), '#coupon' (Kupon Motoru), '#accuracy' (Tercih İsabetleri), '#admin' (Ligler & Bülten), '#admin/settings' (Ayarlar)
         function showTab(tab, adminPage = 'leagues') {
             document.querySelectorAll('.global-nav-item').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
             document.getElementById('tab-matches').hidden = tab !== 'matches';
+            document.getElementById('tab-coupon').hidden = tab !== 'coupon';
+            document.getElementById('tab-accuracy').hidden = tab !== 'accuracy';
             document.getElementById('tab-admin').hidden = tab !== 'admin';
 
             let hash = '';
@@ -244,6 +517,13 @@
                 document.getElementById('admin-page-settings').hidden = adminPage !== 'settings';
                 hash = adminPage === 'settings' ? '#admin/settings' : '#admin';
                 if (adminPage === 'settings') loadSettings(); else loadLeagues();
+            } else if (tab === 'coupon') {
+                hash = '#coupon';
+                loadCouponRules();
+                loadPlayedCoupons();
+            } else if (tab === 'accuracy') {
+                hash = '#accuracy';
+                loadAccuracy();
             }
             history.replaceState(null, '', location.pathname + location.search + hash);
         }
@@ -251,6 +531,8 @@
         function routeFromHash() {
             const [tab, page] = location.hash.replace('#', '').split('/');
             if (tab === 'admin') showTab('admin', page === 'settings' ? 'settings' : 'leagues');
+            else if (tab === 'coupon') showTab('coupon');
+            else if (tab === 'accuracy') showTab('accuracy');
             else showTab('matches');
         }
 
@@ -428,6 +710,29 @@
             }).join('') + '</tr>';
         }
 
+        function renderLeagueCell(m) {
+            const name = esc(m.league_name || '—');
+            const acc = m.league_accuracy !== null && m.league_accuracy !== undefined ? m.league_accuracy : m.league_ft_accuracy;
+            const total = m.league_evaluated || 0;
+
+            let badge = '';
+            if (acc !== null && acc !== undefined && total > 0) {
+                const cls = acc >= 75 ? 'badge-success' : (acc >= 55 ? 'badge-warning' : 'badge-error');
+                const icon = acc >= 75 ? '🏆 ' : '';
+                badge = `<div style="margin-top:2px;">
+                    <span class="badge ${cls}" style="font-size:11px; padding:1px 6px; font-weight:700;"
+                          title="Yapay zekanın bu ligdeki geçmiş tahmin başarı oranı: %${acc.toFixed(1)} (${total} maç)">
+                        ${icon}%${acc.toFixed(0)} (${total})
+                    </span>
+                </div>`;
+            }
+
+            return `<div class="truncate" style="max-width:140px;" title="${esc(m.league_name || '')}">
+                <span style="font-weight:600;">${name}</span>
+                ${badge}
+            </div>`;
+        }
+
         function renderRow(m) {
             const o = m._odds;
             const detailUrl = `/matches/${m.id}`;
@@ -465,10 +770,13 @@
                     const msBadge = m.is_prediction_correct === true
                         ? '<span class="badge badge-success" title="Maç Sonu Tahmini Tuttu">MS ✓</span>'
                         : (m.is_prediction_correct === false ? '<span class="badge badge-error" title="Maç Sonu Tahmini Tutmadı">MS ✗</span>' : '');
+                    const htBadge = m.ht_correct === true
+                        ? '<span class="badge badge-success" title="İlk Yarı Tahmini Tuttu">İY ✓</span>'
+                        : (m.ht_correct === false ? '<span class="badge badge-error" title="İlk Yarı Tahmini Tutmadı">İY ✗</span>' : '');
                     const bestBadge = m.best_bet_correct === true
                         ? '<span class="badge badge-gold" title="Önerilen Tercih Tuttu">⭐ ✓</span>'
                         : (m.best_bet_correct === false ? '<span class="badge badge-error" title="Önerilen Tercih Tutmadı">⭐ ✗</span>' : '');
-                    evalCell = `<div style="display:flex; gap:4px; flex-wrap:nowrap; white-space:nowrap;">${msBadge} ${bestBadge}</div>`;
+                    evalCell = `<div style="display:flex; gap:4px; flex-wrap:nowrap; white-space:nowrap;">${msBadge} ${htBadge} ${bestBadge}</div>`;
                 }
 
                 return `
@@ -476,11 +784,11 @@
                         <td><a class="record-link" href="${detailUrl}">${esc(m.code)}</a></td>
                         <td title="${esc(trTitle)}" style="white-space:nowrap;">${esc(m.local_date || m.match_date)} <strong>${esc(m.local_time || m.match_time)}</strong></td>
                         <td class="truncate" style="max-width:210px;" title="${esc(m.home_team)} – ${esc(m.away_team)}">
-                            <a href="${detailUrl}" style="color:inherit;">${isBasketball(m.sport_type) ? '<span title="Basketbol">🏀</span> ' : ''}${esc(m.home_team)} <span class="muted">–</span> ${esc(m.away_team)}</a>
+                            <a href="${detailUrl}" style="color:inherit;">${isBasketball(m.sport_type) ? '<span title="Basketbol">🏀</span> ' : ''}${m.played ? PLAYED_MARK : ''}${esc(m.home_team)} <span class="muted">–</span> ${esc(m.away_team)}</a>
                         </td>
                         <td>${scoreCell}</td>
                         <td>${evalCell}</td>
-                        <td class="truncate" style="max-width:120px;" title="${esc(m.league_name)}">${esc(m.league_name)}</td>
+                        <td>${renderLeagueCell(m)}</td>
                         <td>${prediction}</td>
                         <td>${confidenceBadge(m.confidence_score)}</td>
                         <td>${bestBetCell}</td>
@@ -510,9 +818,9 @@
                     <td><a class="record-link" href="${detailUrl}">${esc(m.code)}</a></td>
                     <td title="${esc(trTitle)}" style="white-space:nowrap;">${esc(m.local_date || m.match_date)} <strong>${esc(m.local_time || m.match_time)}</strong></td>
                     <td class="truncate" style="max-width:210px;" title="${esc(m.home_team)} – ${esc(m.away_team)}">
-                        <a href="${detailUrl}" style="color:inherit;">${isBasketball(m.sport_type) ? '<span title="Basketbol">🏀</span> ' : ''}${esc(m.home_team)} <span class="muted">–</span> ${esc(m.away_team)}</a>
+                        <a href="${detailUrl}" style="color:inherit;">${isBasketball(m.sport_type) ? '<span title="Basketbol">🏀</span> ' : ''}${m.played ? PLAYED_MARK : ''}${esc(m.home_team)} <span class="muted">–</span> ${esc(m.away_team)}</a>
                     </td>
-                    <td class="truncate" style="max-width:120px;" title="${esc(m.league_name)}">${esc(m.league_name)}</td>
+                    <td>${renderLeagueCell(m)}</td>
                     <td class="num">${formatOdd(o.ms1)}</td>
                     <td class="num">${formatOdd(o.ms0)}</td>
                     <td class="num">${formatOdd(o.ms2)}</td>
@@ -855,7 +1163,29 @@
 
         function renderLeagues() {
             const q = document.getElementById('leagueSearch').value.toLowerCase().trim();
-            const rows = state.leagues.filter(l => l.name.toLowerCase().includes(q));
+            let rows = state.leagues.filter(l => l.name.toLowerCase().includes(q));
+
+            // Sütun sıralaması
+            const { key, dir } = state.leagueSort || { key: 'unfinished_matches', dir: -1 };
+            if (key) {
+                rows.sort((a, b) => {
+                    let va = a[key], vb = b[key];
+                    if (va === null || va === undefined) va = -Infinity;
+                    if (vb === null || vb === undefined) vb = -Infinity;
+                    if (typeof va === 'string') return dir * va.localeCompare(vb, 'tr');
+                    return dir * (va - vb);
+                });
+            }
+
+            // Başlıklarda ok ikonları (↑ / ↓)
+            document.querySelectorAll('#leaguesHead [data-sort]').forEach(th => {
+                const isCurrent = th.dataset.sort === key;
+                th.classList.toggle('sorted', isCurrent);
+                const baseText = th.dataset.label || th.textContent.replace(/ [↑↓]$/, '');
+                th.dataset.label = baseText;
+                th.textContent = isCurrent ? `${baseText} ${dir > 0 ? '↑' : '↓'}` : baseText;
+            });
+
             const enabledCount = state.leagues.filter(l => l.gemini_analysis).length;
             document.getElementById('leaguesFooter').textContent =
                 `${rows.length} / ${state.leagues.length} lig gösteriliyor • ${enabledCount} ligde Gemini izni açık`;
@@ -952,6 +1282,7 @@
             try {
                 const res = await api('/api/admin/settings');
                 renderGeminiSetting(res.gemini);
+                renderCouponOddsSetting(res.coupon_odds);
                 renderReadonlySettings(res.readonly);
             } catch (err) {
                 document.getElementById('geminiSettingMeta').innerHTML = `<span class="text-error">Ayarlar yüklenemedi: ${esc(err.message)}</span>`;
@@ -971,6 +1302,33 @@
             document.getElementById('geminiSettingMeta').innerHTML =
                 `<span class="badge ${gemini.enabled ? 'badge-success' : 'badge-warning'}">${gemini.enabled ? 'Açık' : 'Kapalı'}</span>${source}`;
             applyGeminiState(gemini.enabled);
+        }
+
+        const couponRulesText = co => `Maç tercihi en az ${co.min_match_odds.toFixed(2)} oran · Toplam kupon en az ${co.min_coupon_odds.toFixed(2)} oran`;
+
+        function renderCouponOddsSetting(co) {
+            document.getElementById('settingMinMatchOdds').value = co.min_match_odds;
+            document.getElementById('settingMinCouponOdds').value = co.min_coupon_odds;
+            const env = `MIN_MATCH_ODDS=${co.env_defaults.min_match_odds}, MIN_COUPON_TOTAL_ODDS=${co.env_defaults.min_coupon_odds}`;
+            const source = co.source === 'panel'
+                ? `<span class="badge badge-brand">Panelden ayarlandı</span><span>Son değişiklik: ${esc(co.updated_at || '—')}</span><span>.env: ${esc(env)}</span>`
+                : `<span class="badge">.env varsayılanı</span><span>${esc(env)}</span>`;
+            document.getElementById('couponSettingsMeta').innerHTML =
+                `<span class="badge badge-success">Etkin: ${esc(couponRulesText(co))}</span>${source}`;
+        }
+
+        function renderCouponRules(co) {
+            document.getElementById('couponRules').innerHTML =
+                `<span class="badge badge-brand">${esc(couponRulesText(co))}</span>
+                 <span>Değiştirmek için: <a href="#admin/settings" data-admin-settings-link>Lig Yönetimi › Ayarlar</a></span>`;
+        }
+
+        async function loadCouponRules() {
+            try {
+                renderCouponRules((await api('/api/admin/settings')).coupon_odds);
+            } catch (err) {
+                document.getElementById('couponRules').innerHTML = `<span class="text-error">Oran kuralları yüklenemedi: ${esc(err.message)}</span>`;
+            }
         }
 
         function renderReadonlySettings(ro) {
@@ -1002,6 +1360,358 @@
             }
         }
 
+        // reset: iki kural da .env varsayılanına döner
+        async function saveCouponOddsSetting(reset = false) {
+            const btn = document.getElementById(reset ? 'btnResetCouponSettings' : 'btnSaveCouponSettings');
+            await withBusyButton(btn, reset ? 'Sıfırlanıyor' : 'Kaydediliyor', async () => {
+                try {
+                    const payload = reset ? { min_match_odds: null, min_coupon_odds: null } : {
+                        min_match_odds: Number(document.getElementById('settingMinMatchOdds').value),
+                        min_coupon_odds: Number(document.getElementById('settingMinCouponOdds').value)
+                    };
+                    const res = await postJson('/api/admin/settings/coupon_odds', payload);
+                    renderCouponOddsSetting(res.coupon_odds);
+                    showToast(reset ? 'Kupon oran kuralları .env varsayılanına döndü.' : 'Kupon oran kuralları kaydedildi.');
+                } catch (err) {
+                    showToast(`Kupon oran kuralları kaydedilemedi: ${err.message}`, 'error');
+                }
+            });
+        }
+
+        // ==================== KUPON MOTORU ====================
+        let lastGeneratedCoupon = null;
+
+        async function generateCoupon() {
+            const btn = document.getElementById('btnGenerateCoupon');
+            await withBusyButton(btn, 'Hesaplanıyor', async () => {
+                const matchCount = Number(document.getElementById('couponMatchCount').value) || 3;
+                const strategy = document.getElementById('couponStrategy').value;
+                const sportType = document.getElementById('couponSport').value;
+                const todayOnly = document.getElementById('couponTodayOnly').checked;
+                const excludePlayed = document.getElementById('couponExcludePlayed').checked;
+
+                try {
+                    const res = await postJson('/api/coupon/generate', {
+                        match_count: matchCount,
+                        strategy: strategy,
+                        sport_type: sportType || null,
+                        today_only: todayOnly,
+                        exclude_played: excludePlayed
+                    });
+
+                    renderCouponRules(res.odds_rules);
+                    if (!res.success) {
+                        showToast(res.message || 'Kupon oluşturulamadı.', 'error');
+                        return;
+                    }
+
+                    lastGeneratedCoupon = res;
+                    renderCoupon(res);
+                    showToast(`Kupon hazırlandı! ${res.match_count} maç seçildi, Toplam Oran: ${res.total_odds}`);
+                } catch (err) {
+                    showToast(`Kupon oluşturulamadı: ${err.message}`, 'error');
+                }
+            });
+        }
+
+        function renderCoupon(res) {
+            document.getElementById('couponEmptyState').hidden = true;
+            document.getElementById('couponResultArea').hidden = false;
+            document.getElementById('couponAiCommentBox').hidden = true;
+            document.getElementById('btnSaveCoupon').disabled = false;
+
+            document.getElementById('couponTotalOdds').textContent = `Toplam Oran: ${Number(res.total_odds).toFixed(2)}`;
+            const estReturn = (res.total_odds * 100).toFixed(2);
+            document.getElementById('couponSummarySub').textContent =
+                `Ortalama Güven: %${res.average_confidence} • ${res.match_count} Maç • 100 TL Bahis İçin: ${estReturn} TL`;
+
+            const tbody = document.getElementById('couponMatchesBody');
+            tbody.innerHTML = res.matches.map(m => {
+                const detailUrl = `/matches/${m.id}`;
+                const leagueBadge = m.league_accuracy !== null
+                    ? `<span class="badge ${m.league_accuracy >= 70 ? 'badge-success' : (m.league_accuracy < 50 ? 'badge-error' : '')}" title="Geçmiş ${m.league_evaluated} maçta başarı">%${esc(m.league_accuracy)} (${esc(m.league_evaluated)} maç)</span> <span class="cell-sub">${esc(m.league_note)}</span>`
+                    : '<span class="muted">Yeni lig (Geçmiş veri yok)</span>';
+
+                return `
+                    <tr>
+                        <td><a class="record-link" href="${detailUrl}">${esc(m.code)}</a></td>
+                        <td>${esc(m.local_date)} <strong>${esc(m.local_time)}</strong></td>
+                        <td class="truncate" style="max-width:220px;">
+                            <a href="${detailUrl}" style="color:inherit; font-weight:600;">
+                                ${isBasketball(m.sport_type) ? '🏀 ' : ''}${m.played ? PLAYED_MARK : ''}${esc(m.home_team)} <span class="muted">–</span> ${esc(m.away_team)}
+                            </a>
+                        </td>
+                        <td class="truncate" style="max-width:140px;">${esc(m.league_name)}</td>
+                        <td><span class="badge ${m.pick === 'best_bet' ? 'badge-gold' : 'badge-brand'}" style="font-weight:700;" title="${esc(m.pick_label)}">${m.pick === 'best_bet' ? '⭐ ' : ''}${esc(m.selection)}</span>
+                            <div class="cell-sub">${esc(m.pick_label)}</div></td>
+                        <td class="num" style="font-weight:800; color:var(--brand);">${Number(m.odds).toFixed(2)}</td>
+                        <td class="num"><strong>%${esc(m.confidence)}</strong></td>
+                        <td>${leagueBadge}</td>
+                        <td class="num"><strong style="color:#0284c7;">${esc(m.coupon_score)}</strong></td>
+                        <td><a class="btn btn-sm" href="${detailUrl}">İncele</a></td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        // ==================== OYNANAN KUPONLAR ====================
+        // Kayıtlı (oynanan) bir kupondaki maçların listede ve kupon önerisinde işareti
+        const PLAYED_MARK = '<span class="badge badge-brand" title="Bu maç kayıtlı (oynanan) bir kuponda">🎟️ Oynandı</span> ';
+        const COUPON_STRATEGY_LABELS = { banko: '🛡️ Banko', value: '⭐ Değerli', surprise: '🚀 Sürpriz' };
+        const COUPON_STATUS_BADGES = {
+            won: '<span class="badge badge-success">✓ Tuttu</span>',
+            lost: '<span class="badge badge-error">✗ Yattı</span>',
+            pending: '<span class="badge badge-warning">⏳ Bekliyor</span>'
+        };
+
+        async function saveCoupon() {
+            if (!lastGeneratedCoupon || !lastGeneratedCoupon.matches.length) return;
+            const btn = document.getElementById('btnSaveCoupon');
+            await withBusyButton(btn, 'Kaydediliyor', async () => {
+                try {
+                    await postJson('/api/coupons', {
+                        strategy: lastGeneratedCoupon.strategy,
+                        matches: lastGeneratedCoupon.matches.map(m => ({ id: m.id, pick: m.pick }))
+                    });
+                    showToast('Kupon kaydedildi. Skorlar gelince otomatik değerlendirilecek.');
+                    lastGeneratedCoupon.saved = true;
+                    loadPlayedCoupons();
+                    loadMatches({ silent: true });
+                } catch (err) {
+                    showToast(`Kupon kaydedilemedi: ${err.message}`, 'error');
+                }
+            });
+            // Aynı kupon iki kez kaydedilmesin
+            btn.disabled = Boolean(lastGeneratedCoupon.saved);
+        }
+
+        function playedItemLine(i) {
+            const mark = i.result === true ? '<span class="text-success" title="Tuttu">✓</span>'
+                : i.result === false ? '<span class="text-error" title="Tutmadı">✗</span>' : '<span class="muted" title="Sonuç bekleniyor">⏳</span>';
+            const score = i.score ? ` <span class="cell-sub">(${esc(i.score)})</span>` : '';
+            return `<div>${mark} <a href="/matches/${i.match_id}" style="color:inherit;">${esc(i.home_team)} – ${esc(i.away_team)}</a>
+                · <strong>${esc(i.selection)}</strong> @ ${Number(i.odds).toFixed(2)}${score}
+                <span class="cell-sub">${esc(i.local_date)} ${esc(i.local_time)}</span></div>`;
+        }
+
+        async function loadPlayedCoupons() {
+            const body = document.getElementById('playedCouponsBody');
+            try {
+                const { coupons, summary } = await api('/api/coupons');
+                document.getElementById('playedCouponsSummary').innerHTML = summary.total
+                    ? `<span>Toplam ${summary.total}</span><span class="text-success">Tutan ${summary.won}</span>
+                       <span class="text-error">Yatan ${summary.lost}</span><span>Bekleyen ${summary.pending}</span>
+                       ${summary.win_rate !== null ? `<span class="badge badge-brand">İsabet %${esc(summary.win_rate)}</span>` : ''}`
+                    : '';
+                body.innerHTML = coupons.length ? coupons.map(c => `
+                    <tr>
+                        <td>${esc(c.created_at)}</td>
+                        <td>${esc(COUPON_STRATEGY_LABELS[c.strategy] || c.strategy || '—')}</td>
+                        <td>${c.items.map(playedItemLine).join('')}</td>
+                        <td class="num"><strong>${Number(c.total_odds).toFixed(2)}</strong></td>
+                        <td>${COUPON_STATUS_BADGES[c.status]}</td>
+                        <td><button class="btn btn-sm" type="button" data-delete-coupon="${c.id}" title="Kuponu sil">🗑</button></td>
+                    </tr>`).join('')
+                    : '<tr><td class="empty-state" colspan="6">Henüz kaydedilmiş kupon yok. Kupon oluşturup "Oynadım, Kaydet"e basın.</td></tr>';
+            } catch (err) {
+                body.innerHTML = `<tr><td class="empty-state text-error" colspan="6">Kuponlar yüklenemedi: ${esc(err.message)}</td></tr>`;
+            }
+        }
+
+        function deleteCoupon(couponId) {
+            openModal({
+                title: 'Kuponu sil',
+                bodyHtml: '<p>Bu kupon kayıtlardan silinecek. Emin misiniz?</p>',
+                confirmLabel: 'Sil',
+                onConfirm: async () => {
+                    try {
+                        await api(`/api/coupons/${couponId}`, { method: 'DELETE' });
+                        showToast('Kupon silindi.');
+                        loadPlayedCoupons();
+                    } catch (err) {
+                        showToast(`Kupon silinemedi: ${err.message}`, 'error');
+                    }
+                }
+            });
+        }
+
+        async function requestAiCouponSummary() {
+            if (!lastGeneratedCoupon || !lastGeneratedCoupon.matches.length) return;
+            const btn = document.getElementById('btnAiCouponSummary');
+            await withBusyButton(btn, 'Yorumlanıyor', async () => {
+                try {
+                    const res = await postJson('/api/coupon/ai_summary', {
+                        matches: lastGeneratedCoupon.matches,
+                        total_odds: lastGeneratedCoupon.total_odds,
+                        strategy: lastGeneratedCoupon.strategy
+                    });
+                    if (res.success && res.summary) {
+                        const box = document.getElementById('couponAiCommentBox');
+                        const text = document.getElementById('couponAiCommentText');
+                        text.textContent = res.summary;
+                        box.hidden = false;
+                        showToast('Gemini kupon değerlendirmesi hazır!');
+                    } else {
+                        showToast(res.error || 'Yorum alınamadı.', 'error');
+                    }
+                } catch (err) {
+                    showToast(`AI yorumu alınamadı: ${err.message}`, 'error');
+                }
+            });
+        }
+
+        function copyCouponToClipboard() {
+            if (!lastGeneratedCoupon || !lastGeneratedCoupon.matches.length) return;
+            const lines = [
+                `🎟️ AI BETTING ENGINE - GÜNÜN KUPONU (${lastGeneratedCoupon.strategy.toUpperCase()})`,
+                `Toplam Oran: ${lastGeneratedCoupon.total_odds} | Ortalama Güven: %${lastGeneratedCoupon.average_confidence}`,
+                '------------------------------------'
+            ];
+            lastGeneratedCoupon.matches.forEach((m, i) => {
+                lines.push(`${i+1}. [${m.code}] ${m.home_team} - ${m.away_team}`);
+                lines.push(`   Tercih: ${m.selection} | Oran: ${m.odds} | Güven: %${m.confidence}`);
+                lines.push(`   Lig: ${m.league_name} (${m.league_note})`);
+            });
+            lines.push('------------------------------------');
+            lines.push('Bol şanslar!');
+            navigator.clipboard.writeText(lines.join('\n')).then(() => {
+                showToast('Kupon panoya kopyalandı! 📋');
+            }).catch(() => {
+                showToast('Panoya kopyalanamadı.', 'error');
+            });
+        }
+
+        // ==================== TERCİH İSABETLERİ ====================
+        function accuracyProgressBar(acc, correct, total) {
+            if (!total) return '<span class="muted">—</span>';
+            const pct = Math.min(100, Math.max(0, acc || 0));
+            const color = pct >= 70 ? '#10b981' : (pct >= 50 ? '#f59e0b' : '#ef4444');
+            return `
+                <div style="display:flex; flex-direction:column; gap:3px; max-width:180px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; font-size:12px;">
+                        <strong style="color:${color}; font-size:13px;">%${pct.toFixed(1)}</strong>
+                        <span class="muted" style="font-size:11px;">${correct}/${total}</span>
+                    </div>
+                    <div style="background:#e2e8f0; border-radius:4px; height:6px; overflow:hidden;">
+                        <div style="background:${color}; width:${pct}%; height:100%; border-radius:4px;"></div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function loadAccuracy() {
+            try {
+                const res = await api('/api/leagues/accuracy');
+                if (!res.success) throw new Error('Veri alınamadı.');
+                const s = res.summary;
+                document.getElementById('accKpiBestBetPct').textContent = s.best_bet_total ? `%${Number(s.best_bet_accuracy).toFixed(1)}` : '—';
+                document.getElementById('accKpiBestBetSub').textContent = `${s.best_bet_correct} / ${s.best_bet_total} tercih tuttu`;
+                document.getElementById('accKpiAltBetPct').textContent = s.alt_bet_total ? `%${Number(s.alt_bet_accuracy).toFixed(1)}` : '—';
+                document.getElementById('accKpiAltBetSub').textContent = `${s.alt_bet_correct} / ${s.alt_bet_total} tercih tuttu`;
+
+                if (s.top_league) {
+                    document.getElementById('accKpiTopLeague').textContent = s.top_league.name;
+                    document.getElementById('accKpiTopLeagueSub').textContent = `%${s.top_league.accuracy} (${s.top_league.correct}/${s.top_league.total} maç)`;
+                } else {
+                    document.getElementById('accKpiTopLeague').textContent = '—';
+                    document.getElementById('accKpiTopLeagueSub').textContent = 'Sonuçlanan maç yok';
+                }
+
+                document.getElementById('accKpiCounts').textContent = `${s.evaluated_leagues_count} Lig • ${s.total_evaluated_matches} Maç`;
+
+                state.accuracyLeagues = res.leagues || [];
+                renderAccuracy();
+            } catch (err) {
+                document.getElementById('accuracyBody').innerHTML =
+                    `<tr><td class="empty-state text-error" colspan="8">İsabet oranları yüklenemedi: ${esc(err.message)}</td></tr>`;
+            }
+        }
+
+        function renderAccuracy() {
+            const q = (document.getElementById('accuracySearch').value || '').toLowerCase().trim();
+            const sport = document.getElementById('accuracySportFilter').value;
+            const onlyEval = document.getElementById('accuracyOnlyEvaluated').checked;
+
+            let rows = state.accuracyLeagues.filter(l => {
+                if (q && !l.name.toLowerCase().includes(q)) return false;
+                if (sport !== 'ALL' && l.sport_type !== sport) return false;
+                if (onlyEval && (!l.evaluated || l.evaluated === 0)) return false;
+                return true;
+            });
+
+            // Sıralama
+            const { key, dir } = state.accuracySort || { key: 'best_bet_accuracy', dir: -1 };
+            if (key) {
+                rows.sort((a, b) => {
+                    let va = a[key], vb = b[key];
+                    if (va === null || va === undefined) va = -Infinity;
+                    if (vb === null || vb === undefined) vb = -Infinity;
+                    if (typeof va === 'string') return dir * va.localeCompare(vb, 'tr');
+                    return dir * (va - vb);
+                });
+            }
+
+            // Başlıklarda ok ikonları (↑ / ↓)
+            document.querySelectorAll('#accuracyHead [data-sort]').forEach(th => {
+                const isCurrent = th.dataset.sort === key;
+                th.classList.toggle('sorted', isCurrent);
+                const baseText = th.dataset.label || th.textContent.replace(/ [↑↓]$/, '');
+                th.dataset.label = baseText;
+                th.textContent = isCurrent ? `${baseText} ${dir > 0 ? '↑' : '↓'}` : baseText;
+            });
+
+            document.getElementById('accuracyFooter').textContent =
+                `${rows.length} / ${state.accuracyLeagues.length} lig gösteriliyor`;
+
+            const body = document.getElementById('accuracyBody');
+            if (rows.length === 0) {
+                body.innerHTML = `<tr><td class="empty-state" colspan="8">Kriterlere uygun lig bulunamadı.</td></tr>`;
+                return;
+            }
+
+            body.innerHTML = rows.map(l => {
+                const acc1 = l.best_bet_accuracy;
+                let levelBadge = '<span class="muted">Yetersiz Veri</span>';
+                let weightBadge = '<span class="muted">Nötr</span>';
+
+                if (l.best_bet_total >= 2 && acc1 !== null) {
+                    if (acc1 >= 75) {
+                        levelBadge = `<span class="badge badge-success">🏆 Yüksek (%${acc1})</span>`;
+                        weightBadge = `<span class="badge badge-gold" title="Kupon motorunda +20 puan bonus">+%20 Bonus</span>`;
+                    } else if (acc1 >= 65) {
+                        levelBadge = `<span class="badge badge-success">✓ Başarılı</span>`;
+                        weightBadge = `<span class="badge badge-brand" title="Kupon motorunda +12 puan bonus">+%12 Bonus</span>`;
+                    } else if (acc1 < 40) {
+                        levelBadge = `<span class="badge badge-error">⚠ Düşük</span>`;
+                        weightBadge = `<span class="badge badge-error" title="Kupon motorunda -25 puan ceza">-%25 Ceza</span>`;
+                    } else if (acc1 < 50) {
+                        levelBadge = `<span class="badge badge-warning">Düşük İsabet</span>`;
+                        weightBadge = `<span class="badge badge-warning" title="Kupon motorunda -10 puan ceza">-%10 Ceza</span>`;
+                    } else {
+                        levelBadge = `<span class="badge badge-warning">⚖️ Dengeli</span>`;
+                        weightBadge = `<span class="muted">Dengeli</span>`;
+                    }
+                }
+
+                return `
+                    <tr>
+                        <td class="truncate" style="max-width:320px;" title="${esc(l.name)}">
+                            <strong>${isBasketball(l.sport_type) ? '🏀 ' : '⚽ '}${esc(l.name)}</strong>
+                        </td>
+                        <td>${sportLabel(l.sport_type)}</td>
+                        <td class="num"><strong>${l.evaluated || 0}</strong></td>
+                        <td>${accuracyProgressBar(l.best_bet_accuracy, l.best_bet_correct, l.best_bet_total)}</td>
+                        <td>${accuracyProgressBar(l.alt_bet_accuracy, l.alt_bet_correct, l.alt_bet_total)}</td>
+                        <td class="center">${levelBadge}</td>
+                        <td class="center">${weightBadge}</td>
+                        <td class="center">
+                            <span class="badge ${l.gemini_analysis ? 'badge-success' : ''}">${l.gemini_analysis ? 'Açık' : 'Kapalı'}</span>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
         // ==================== EVENT BINDINGS ====================
         document.querySelectorAll('.global-nav-item').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
         document.querySelectorAll('[data-admin-page]').forEach(b => b.addEventListener('click', () => showTab('admin', b.dataset.adminPage)));
@@ -1011,6 +1721,13 @@
         document.getElementById('geminiToggle').addEventListener('change', e => saveGeminiSetting(e.target.checked, e.target));
         document.getElementById('geminiSettingMeta').addEventListener('click', e => {
             if (e.target.closest('#btnResetGemini')) saveGeminiSetting(null, null);
+        });
+
+        document.getElementById('couponSettingsForm').addEventListener('submit', e => { e.preventDefault(); saveCouponOddsSetting(); });
+        document.getElementById('btnResetCouponSettings').addEventListener('click', () => saveCouponOddsSetting(true));
+        // Kupon sekmesindeki "Ayarlar" bağlantısı
+        document.addEventListener('click', e => {
+            if (e.target.closest('[data-admin-settings-link]')) { e.preventDefault(); showTab('admin', 'settings'); }
         });
 
         document.getElementById('viewPicker').addEventListener('change', e => {
@@ -1053,6 +1770,16 @@
         document.getElementById('btnAnalyzeAll').addEventListener('click', e => startPredictionJob(e.currentTarget));
         document.getElementById('btnAnalyzeAllFromList').addEventListener('click', e => startPredictionJob(e.currentTarget));
 
+        // Kupon formu ve butonları
+        document.getElementById('couponForm').addEventListener('submit', e => { e.preventDefault(); generateCoupon(); });
+        document.getElementById('btnCopyCoupon').addEventListener('click', copyCouponToClipboard);
+        document.getElementById('btnSaveCoupon').addEventListener('click', saveCoupon);
+        document.getElementById('playedCouponsBody').addEventListener('click', e => {
+            const btn = e.target.closest('[data-delete-coupon]');
+            if (btn) deleteCoupon(Number(btn.dataset.deleteCoupon));
+        });
+        document.getElementById('btnAiCouponSummary').addEventListener('click', requestAiCouponSummary);
+
         document.getElementById('leagueSearch').addEventListener('input', renderLeagues);
         document.getElementById('btnRefreshLeagues').addEventListener('click', loadLeagues);
         document.getElementById('btnEnableAll').addEventListener('click', () => toggleAllLeagues(true));
@@ -1066,6 +1793,38 @@
             if (btn) analyzeLeague(Number(btn.dataset.analyzeLeague), btn);
         });
 
+        // Lig tablosunda sütuna tıklayarak sıralama
+        const leaguesHead = document.getElementById('leaguesHead');
+        if (leaguesHead) {
+            leaguesHead.addEventListener('click', e => {
+                const th = e.target.closest('[data-sort]');
+                if (!th) return;
+                const key = th.dataset.sort;
+                state.leagueSort = state.leagueSort.key === key
+                    ? { key, dir: -state.leagueSort.dir }
+                    : { key, dir: -1 };
+                renderLeagues();
+            });
+        }
+
+        // Tercih İsabetleri tablosunda sıralama ve filtreleme
+        const accuracyHead = document.getElementById('accuracyHead');
+        if (accuracyHead) {
+            accuracyHead.addEventListener('click', e => {
+                const th = e.target.closest('[data-sort]');
+                if (!th) return;
+                const key = th.dataset.sort;
+                state.accuracySort = state.accuracySort.key === key
+                    ? { key, dir: -state.accuracySort.dir }
+                    : { key, dir: -1 };
+                renderAccuracy();
+            });
+        }
+        document.getElementById('accuracySearch').addEventListener('input', renderAccuracy);
+        document.getElementById('accuracySportFilter').addEventListener('change', renderAccuracy);
+        document.getElementById('accuracyOnlyEvaluated').addEventListener('change', renderAccuracy);
+        document.getElementById('btnRefreshAccuracy').addEventListener('click', loadAccuracy);
+
         // ==================== BAŞLANGIÇ ====================
         window.addEventListener('DOMContentLoaded', () => {
             setView(new URLSearchParams(location.search).get('view'));
@@ -1073,7 +1832,7 @@
             statsJob.load();
             predictionJob.load();
             resultsJob.load();
-            if (location.hash.startsWith('#admin')) routeFromHash();
+            if (location.hash) routeFromHash();
 
             // KPI kartlarına tıklayarak doğrudan görünümler arası geçiş
             const kpiUnfinished = document.getElementById('kpiCardUnfinished');

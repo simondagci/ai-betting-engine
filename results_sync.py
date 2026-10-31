@@ -5,6 +5,7 @@ Toplu maç sonuçları işi: tamamlanmış ama skoru girilmemiş futbol ve baske
 Skoru zaten kayıtlı maçlar listeye alınmaz ve iş sürerken elle girilen skorların üzerine yazılmaz ('skipped').
 Sadece normal süresinde biten maçlar yazılır (futbolda ilk yarı skoru da bilinmeli); diğerleri 'missing' sayılır.
 """
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 import database
 import data_source
@@ -31,10 +32,30 @@ def _label(match: Dict[str, Any]) -> str:
     return f"{match['home_team']} - {match['away_team']}"
 
 def _fetch_result(match: Dict[str, Any], cache: ResultsCache) -> Optional[Dict[str, Any]]:
-    key = (match["result_date"], rules.is_basketball(match["sport_type"]))
-    if key not in cache:
-        cache[key] = {str(r["code"]): r for r in data_source.fetch_match_results(key[0], is_basketball=key[1]) or []}
-    return cache[key].get(str(match["code"]))
+    is_bb = rules.is_basketball(match["sport_type"])
+    code = str(match["code"])
+    primary_key = (match["result_date"], is_bb)
+    if primary_key not in cache:
+        cache[primary_key] = {str(r["code"]): r for r in data_source.fetch_match_results(primary_key[0], is_basketball=primary_key[1]) or []}
+    res = cache[primary_key].get(code)
+    if res and res.get("ft_home") is not None:
+        return res
+
+    # Gece yarısı / saat farkı veya 1 gün erteleme durumunda komşu günleri (+1 gün, -1 gün) kontrol et
+    try:
+        dt = datetime.strptime(match["result_date"], "%Y-%m-%d")
+        for delta in (1, -1):
+            n_date = (dt + timedelta(days=delta)).strftime("%Y-%m-%d")
+            n_key = (n_date, is_bb)
+            if n_key not in cache:
+                cache[n_key] = {str(r["code"]): r for r in data_source.fetch_match_results(n_key[0], is_basketball=n_key[1]) or []}
+            n_res = cache[n_key].get(code)
+            if n_res and n_res.get("ft_home") is not None:
+                return n_res
+    except Exception:
+        pass
+
+    return None
 
 def sync_one(match: Dict[str, Any], cache: ResultsCache, db_path: str = database.DB_FILE) -> str:
     """Tek maçın sonucunu kaydeder: 'updated', 'missing' (skor henüz yok / eksik) veya 'skipped' (bu arada skor girilmiş)."""

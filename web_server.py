@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 from flask import Flask, render_template, jsonify, request
 import database
 import config
+import coupon
 import data_source
 import gemini_engine
 import match_data
@@ -266,6 +267,68 @@ def api_prediction_job_cancel():
     """Toplu analizi, o an analiz edilen maç bittikten sonra durdurur."""
     return jsonify({"success": True, "job": prediction_batch.cancel()})
 
+# ==================== KUPON MOTORU ====================
+@app.route("/api/coupon/generate", methods=["POST"])
+def api_generate_coupon():
+    """
+    Ayarlardaki oran kurallarına (min maç oranı, min kupon oranı) uyan kupon üretir.
+    {"match_count": 3, "today_only": true, "strategy": "banko|value|surprise", "sport_type": "FOOTBALL|BASKETBALL|null",
+     "exclude_played": false}  -> exclude_played: oynanan kuponlardaki maçlar tekrar önerilmez
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        match_count = int(data.get("match_count") or 3)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Maç sayısı sayı olmalıdır."}), 400
+    sport_type = data.get("sport_type")
+    return jsonify(coupon.generate_coupon(
+        match_count=match_count,
+        today_only=bool(data.get("today_only", True)),
+        strategy=str(data.get("strategy") or coupon.STRATEGY_BANKO).lower(),
+        sport_type=sport_type if sport_type in (rules.FOOTBALL, rules.BASKETBALL) else None,
+        exclude_played=bool(data.get("exclude_played", False)),
+    ))
+
+@app.route("/api/coupons", methods=["GET"])
+def api_list_coupons():
+    """Kaydedilen kuponlar; her tercih maç sonucuna göre tuttu / yattı / bekliyor olarak değerlendirilir."""
+    with database.db_session() as conn:
+        return jsonify({"success": True, **database.get_coupons(conn)})
+
+@app.route("/api/coupons", methods=["POST"])
+def api_save_coupon():
+    """Oynanan kuponu kaydeder: {"strategy": "banko", "matches": [{"id": 12, "pick": "best_bet"}, ...]}."""
+    data = request.get_json(silent=True) or {}
+    try:
+        coupon_id = coupon.save_played_coupon(data.get("strategy"), data.get("matches") or [])
+    except (TypeError, ValueError, KeyError) as e:
+        return jsonify({"success": False, "error": str(e) or "Geçersiz kupon."}), 400
+    return jsonify({"success": True, "coupon_id": coupon_id})
+
+@app.route("/api/coupons/<int:coupon_id>", methods=["DELETE"])
+def api_delete_coupon(coupon_id: int):
+    with database.db_session() as conn:
+        if not database.delete_coupon(conn, coupon_id):
+            return jsonify({"success": False, "error": "Kupon bulunamadı."}), 404
+    return jsonify({"success": True})
+
+@app.route("/api/coupon/ai_summary", methods=["POST"])
+def api_coupon_ai_summary():
+    """Üretilen kupon için Gemini'den kısa değerlendirme alır (sadece butona basınca)."""
+    data = request.get_json(silent=True) or {}
+    if not data.get("matches"):
+        return jsonify({"success": False, "error": "Kuponda maç bulunamadı."}), 400
+    with database.db_session() as conn:
+        disabled = _gemini_disabled_response(conn)
+        if disabled:
+            return disabled
+    try:
+        response = gemini_engine.get_gemini_client().models.generate_content(
+            model=config.GEMINI_MODEL, contents=coupon.summary_prompt(data))
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    return jsonify({"success": True, "summary": (response.text or "").strip() or "Değerlendirme üretilemedi."})
+
 @app.route("/api/matches/<int:match_id>/analyze", methods=["POST"])
 def api_analyze_single_match(match_id: int):
     """
@@ -425,6 +488,47 @@ def api_analyze_league_matches(league_id: int):
         "errors": errors
     })
 
+@app.route("/api/leagues/accuracy")
+def api_get_leagues_accuracy():
+    """Liglere göre Tercih 1 (⭐) ve 2. Tercih (alt_bet) tutma oranlarını ve özet metrikleri döner."""
+    with database.db_session() as conn:
+        leagues = database.get_leagues_admin(conn)
+        accuracy_overall = database.calculate_prediction_accuracy(conn)
+
+    # Değerlendirilen maç sayısı > 0 olan ligler
+    evaluated_leagues = [l for l in leagues if l.get("evaluated", 0) > 0]
+    evaluated_leagues.sort(
+        key=lambda x: (
+            x["best_bet_accuracy"] if x["best_bet_accuracy"] is not None else -1,
+            x.get("best_bet_total", 0)
+        ),
+        reverse=True
+    )
+
+    top_league = evaluated_leagues[0] if evaluated_leagues else None
+
+    return jsonify({
+        "success": True,
+        "summary": {
+            "total_evaluated_matches": accuracy_overall["total_evaluated"],
+            "best_bet_correct": accuracy_overall["best_bet_correct"],
+            "best_bet_total": accuracy_overall["best_bet_total"],
+            "best_bet_accuracy": accuracy_overall["best_bet_accuracy"],
+            "alt_bet_correct": accuracy_overall["alt_bet_correct"],
+            "alt_bet_total": accuracy_overall["alt_bet_total"],
+            "alt_bet_accuracy": accuracy_overall["alt_bet_accuracy"],
+            "evaluated_leagues_count": len(evaluated_leagues),
+            "total_leagues_count": len(leagues),
+            "top_league": {
+                "name": top_league["name"],
+                "accuracy": top_league["best_bet_accuracy"],
+                "total": top_league["best_bet_total"],
+                "correct": top_league["best_bet_correct"]
+            } if top_league else None
+        },
+        "leagues": leagues
+    })
+
 @app.route("/api/stats")
 def api_stats():
     """Genel sistem ve veritabanı istatistiklerini döner."""
@@ -449,10 +553,12 @@ def api_get_settings():
     """Ayarlar sayfası için panelden değiştirilebilen ve salt okunur ayarları döner."""
     with database.db_session() as conn:
         gemini = database.get_gemini_setting(conn)
+        coupon_odds = database.get_coupon_odds_settings(conn)
         stats = database.get_db_stats(conn)
     return jsonify({
         "success": True,
         "gemini": gemini,
+        "coupon_odds": coupon_odds,
         "readonly": {
             "data_source": data_source.source_name(),
             "model": config.GEMINI_MODEL,
@@ -480,6 +586,24 @@ def api_set_gemini_setting():
         database.set_gemini_enabled(conn, data["enabled"])
         gemini = database.get_gemini_setting(conn)
     return jsonify({"success": True, "gemini": gemini})
+
+@app.route("/api/admin/settings/coupon_odds", methods=["POST"])
+def api_set_coupon_odds_settings():
+    """
+    Kupon oran kurallarını kaydeder: {"min_match_odds": 1.30, "min_coupon_odds": 2.00}.
+    Bir değer null gönderilirse o kural .env varsayılanına döner.
+    """
+    data = request.get_json(silent=True) or {}
+    values = {}
+    for key in ("min_match_odds", "min_coupon_odds"):
+        try:
+            values[key] = None if data.get(key) is None else float(data[key])
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": f"'{key}' sayı olmalıdır."}), 400
+    with database.db_session() as conn:
+        database.set_coupon_odds_settings(conn, values["min_match_odds"], values["min_coupon_odds"])
+        odds = database.get_coupon_odds_settings(conn)
+    return jsonify({"success": True, "coupon_odds": odds})
 
 def start_server(host: str = None, port: int = None, debug: bool = False):
     """Flask web sunucusunu başlatır."""

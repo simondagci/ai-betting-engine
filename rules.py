@@ -136,8 +136,11 @@ def evaluate_prediction(prediction: Dict[str, Any], result: Dict[str, Any],
     ft_h, ft_a = result["ft_home_score"], result["ft_away_score"]
 
     ht = None
+    ht_score = None
     if ht_h is not None and ht_a is not None:
         ht = is_result_prediction_correct(result_label("İY", ht_h, ht_a), prediction.get("predicted_ht_result"), "İY")
+        if prediction.get("predicted_ht_score"):
+            ht_score = is_score_prediction_correct(ht_h, ht_a, prediction.get("predicted_ht_score"))
 
     total_diff = None
     if is_basketball(sport_type):
@@ -150,6 +153,7 @@ def evaluate_prediction(prediction: Dict[str, Any], result: Dict[str, Any],
 
     evaluation = {
         "ht": ht,
+        "ht_score": ht_score,
         "ft": is_result_prediction_correct(result_label("MS", ft_h, ft_a), prediction.get("predicted_ft_result"), "MS"),
         "over_under": over_under,
         "kg": kg,
