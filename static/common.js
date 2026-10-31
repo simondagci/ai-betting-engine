@@ -181,13 +181,16 @@ function pickMainOdds(odds = [], sportType = 'FOOTBALL') {
     };
 }
 
-// Tahmin özetinin ikinci satırı: futbol 'İY 1 · ALT · KG YOK', basketbol 'İY 1 · Toplam 217'
+// Tahmin özetinin ikinci satırı: futbol 'İY 1 (1-0) · ALT · KG YOK', basketbol 'İY 1 (42-38) · Toplam 217'
 function predictionSubline(p, sportType) {
+    const htText = p.predicted_ht_score
+        ? `${p.predicted_ht_result || '—'} (${p.predicted_ht_score})`
+        : (p.predicted_ht_result || '—');
     if (isBasketball(sportType)) {
         const total = p.predicted_total_points !== null && p.predicted_total_points !== undefined ? ` · Toplam ${p.predicted_total_points}` : '';
-        return `${p.predicted_ht_result || '—'}${total}`;
+        return `${htText}${total}`;
     }
-    return `${p.predicted_ht_result || '—'} · ${p.predicted_over_under_3 || '—'} · ${p.predicted_kg || '—'}`;
+    return `${htText} · ${p.predicted_over_under_3 || '—'} · ${p.predicted_kg || '—'}`;
 }
 
 function formatOdd(value) {

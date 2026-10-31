@@ -35,7 +35,7 @@ _LATEST_PREDICTION_JOIN = """
 
 # Not: Alt/Üst (predicted_over_under_3) ve KG sadece futbolda, maç sonu toplam sayı (predicted_total_points) sadece basketbolda dolar
 _PREDICTION_COLUMNS = """
-    p.predicted_ht_result, p.predicted_ft_result, p.predicted_over_under_3,
+    p.predicted_ht_result, p.predicted_ht_score, p.predicted_ft_result, p.predicted_over_under_3,
     p.predicted_kg, p.predicted_score, p.confidence_score, p.ai_analysis_summary,
     p.predicted_total_points, p.best_bet_market, p.best_bet_selection, p.best_bet_confidence, p.best_bet_reason,
     p.best_bet_odds, p.alt_bet_market, p.alt_bet_selection, p.alt_bet_confidence, p.alt_bet_odds
@@ -262,6 +262,7 @@ def init_db(db_path: str = DB_FILE) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             match_id INTEGER NOT NULL,
             predicted_ht_result TEXT,
+            predicted_ht_score TEXT,
             predicted_ft_result TEXT,
             predicted_over_under_3 TEXT,
             predicted_kg TEXT,
@@ -273,6 +274,8 @@ def init_db(db_path: str = DB_FILE) -> None:
             FOREIGN KEY (match_id) REFERENCES matches (id)
         );
         """)
+        # İlk yarı skor tahmini (örn: 1-0 veya 38-42)
+        _ensure_column(cursor, "predictions", "predicted_ht_score", "TEXT")
         # avoid_bets_json: kaldırılan "oynanmaması gerekenler" özelliğinden kalan eski sütun (artık yazılmıyor / okunmuyor)
         _ensure_column(cursor, "predictions", "avoid_bets_json", "TEXT")
         # Basketbol: Gemini'nin maç sonu toplam sayı tahmini (uzatmalar dahil)
@@ -772,14 +775,15 @@ def save_prediction(conn: sqlite3.Connection, match_id: int, prediction_data: Di
     alt_bet = prediction_data.get("alt_bet") or {}
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO predictions (match_id, predicted_ht_result, predicted_ft_result, predicted_over_under_3, predicted_kg, predicted_score,
+        INSERT INTO predictions (match_id, predicted_ht_result, predicted_ht_score, predicted_ft_result, predicted_over_under_3, predicted_kg, predicted_score,
                                  confidence_score, ai_analysis_summary, predicted_total_points,
                                  best_bet_market, best_bet_selection, best_bet_confidence, best_bet_reason, best_bet_odds,
                                  alt_bet_market, alt_bet_selection, alt_bet_confidence, alt_bet_odds)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         match_id,
         prediction_data.get("predicted_ht_result"),
+        prediction_data.get("predicted_ht_score"),
         prediction_data.get("predicted_ft_result"),
         prediction_data.get("predicted_over_under_3"),
         prediction_data.get("predicted_kg"),

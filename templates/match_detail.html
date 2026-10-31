@@ -389,7 +389,7 @@
                 <div class="card-body">
                     <div class="prediction-grid">
                         ${predictionCell('Maç Sonu', p.predicted_ft_result, ev.ft, bestMarket === 'ft', actualFtText)}
-                        ${predictionCell('İlk Yarı', p.predicted_ht_result, ev.ht, bestMarket === 'ht', actualHtText)}
+                        ${predictionCell('İlk Yarı', `${p.predicted_ht_result || '—'}${p.predicted_ht_score ? ` · ${p.predicted_ht_score}` : ''}`, ev.ht, bestMarket === 'ht', actualHtText)}
                         ${sportCells}
                         ${predictionCell('Tahmini Skor', p.predicted_score, ev.score, false, actualScoreText)}
                         ${predictionCell('Güven', p.confidence_score !== null ? `%${p.confidence_score}` : null)}

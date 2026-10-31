@@ -595,7 +595,7 @@ class TestWebServer(unittest.TestCase):
         data = self.client.get(f"/api/matches/{self.match_id}/details").get_json()["data"]
         self.assertEqual(data["match"]["status"], "COMPLETED")
         self.assertEqual(data["predictions"][0]["evaluation"],
-                         {"ht": True, "ft": True, "over_under": True, "kg": False, "score": True, "total_diff": None, "best_bet": None, "alt_bet": None})
+                         {"ht": True, "ht_score": None, "ft": True, "over_under": True, "kg": False, "score": True, "total_diff": None, "best_bet": None, "alt_bet": None})
 
     def test_sync_stats_keeps_existing_fields(self):
         url = f"/api/matches/{self.match_id}/sync_stats"
@@ -867,7 +867,7 @@ class TestBasketball(unittest.TestCase):
         result = {"ht_home_score": 56, "ht_away_score": 50, "ft_home_score": 110, "ft_away_score": 104}
         ev = rules.evaluate_prediction({"predicted_ht_result": "İY 1", "predicted_ft_result": "MS 1", "predicted_score": "112-105",
                                         "predicted_total_points": 217, "predicted_over_under_3": "ÜST"}, result, "BASKETBALL")
-        self.assertEqual(ev, {"ht": True, "ft": True, "over_under": None, "kg": None, "score": False, "total_diff": 3, "best_bet": None, "alt_bet": None})
+        self.assertEqual(ev, {"ht": True, "ht_score": None, "ft": True, "over_under": None, "kg": None, "score": False, "total_diff": 3, "best_bet": None, "alt_bet": None})
 
     def test_basketball_results_and_accuracy(self):
         if os.path.exists(TEST_DB):
@@ -1567,6 +1567,29 @@ class TestSourceSwitchAndSync(unittest.TestCase):
         for key in ("best_bet_accuracy", "alt_bet_accuracy", "best_bet_total", "alt_bet_total", "total_evaluated_matches"):
             self.assertIn(key, summary)
         self.assertIsInstance(data["leagues"], list)
+
+    def test_predicted_ht_score_flow(self):
+        with database.db_session(TEST_DB) as conn:
+            mid = database.save_match(conn, "HT_SCORE_1", "Takım A", "Takım B", "Süper Lig", "01.01.2099", "20:00")
+            database.save_prediction(conn, mid, {
+                "predicted_ht_result": "İY 1",
+                "predicted_ht_score": "1-0",
+                "predicted_ft_result": "MS 1",
+                "predicted_score": "2-1",
+                "confidence_score": 85
+            })
+            preds = database.get_match_predictions(conn, mid)
+            self.assertEqual(len(preds), 1)
+            pred = preds[0]
+            self.assertEqual(pred["predicted_ht_score"], "1-0")
+
+            # Skor kaydet ve değerlendir
+            database.save_result(conn, mid, ht_home=1, ht_away=0, ft_home=2, ft_away=1)
+            result = database.get_match_result(conn, mid)
+            ev = rules.evaluate_prediction(pred, result)
+            self.assertTrue(ev["ht"])
+            self.assertTrue(ev["ht_score"])
+            self.assertTrue(ev["score"])
 
 if __name__ == "__main__":
     unittest.main()
