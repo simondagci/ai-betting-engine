@@ -341,6 +341,45 @@ def init_db(db_path: str = DB_FILE) -> None:
 
         # Kaldırılan lig başarı önbelleği: lig isabeti her istekte sonuçlardan hesaplanır (bayatlamaz)
         cursor.execute("DROP TABLE IF EXISTS league_accuracy_cache")
+
+        # Yerel Python Makine Öğrenmesi / İstatistiksel Tahmin Tablosu (Gemini'den %100 bağımsız)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS python_predictions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER NOT NULL UNIQUE,
+            model_type TEXT NOT NULL DEFAULT 'poisson_xg',
+            predicted_ht_result TEXT,
+            predicted_ht_score TEXT,
+            predicted_ft_result TEXT,
+            predicted_score TEXT,
+            predicted_over_under_3 TEXT,
+            predicted_kg TEXT,
+            home_win_prob REAL,
+            draw_prob REAL,
+            away_win_prob REAL,
+            over_3_prob REAL,
+            kg_prob REAL,
+            expected_home_goals REAL,
+            expected_away_goals REAL,
+            confidence_score INTEGER,
+            best_bet_market TEXT,
+            best_bet_selection TEXT,
+            best_bet_confidence INTEGER,
+            best_bet_reason TEXT,
+            best_bet_odds REAL,
+            alt_bet_market TEXT,
+            alt_bet_selection TEXT,
+            alt_bet_confidence INTEGER,
+            alt_bet_odds REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (match_id) REFERENCES matches (id)
+        );
+        """)
+        for column, ddl in (("best_bet_market", "TEXT"), ("best_bet_selection", "TEXT"),
+                            ("best_bet_confidence", "INTEGER"), ("best_bet_reason", "TEXT"), ("best_bet_odds", "REAL"),
+                            ("alt_bet_market", "TEXT"), ("alt_bet_selection", "TEXT"),
+                            ("alt_bet_confidence", "INTEGER"), ("alt_bet_odds", "REAL")):
+            _ensure_column(cursor, "python_predictions", column, ddl)
         conn.commit()
 
         # Tarihi geçmiş maçları topluca güncelle
@@ -535,9 +574,172 @@ def get_leagues_admin(conn: sqlite3.Connection, query: str = "") -> List[Dict[st
 
     sql += " GROUP BY l.id ORDER BY unfinished_matches DESC, total_matches DESC, l.name ASC"
     prediction_stats = get_league_prediction_stats(conn)
+    python_stats = get_league_python_prediction_stats(conn)
     empty_stats = {"evaluated": 0, "best_bet_total": 0, "best_bet_correct": 0, "best_bet_accuracy": None,
                    "alt_bet_total": 0, "alt_bet_correct": 0, "alt_bet_accuracy": None, "ft_accuracy": None}
     return [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "sport_type": r["sport_type"],
+            "gemini_analysis": bool(r["gemini_analysis"]),
+            "total_matches": r["total_matches"] or 0,
+            "unfinished_matches": r["unfinished_matches"] or 0,
+            "analyzed_matches": r["analyzed_matches"] or 0,
+            **{key: value for key, value in prediction_stats.get(r["id"], empty_stats).items() if key != "ft_correct"},
+            **{f"python_{key}": value for key, value in python_stats.get(r["id"], empty_stats).items() if key != "ft_correct"}
+        }
+        for r in conn.execute(sql, params).fetchall()
+    ]
+
+_PYTHON_PREDICTION_COLUMNS = """
+    pp.predicted_ht_result, pp.predicted_ht_score, pp.predicted_ft_result, pp.predicted_over_under_3,
+    pp.predicted_kg, pp.predicted_score, pp.confidence_score,
+    pp.best_bet_market, pp.best_bet_selection, pp.best_bet_confidence, pp.best_bet_reason, pp.best_bet_odds,
+    pp.alt_bet_market, pp.alt_bet_selection, pp.alt_bet_confidence, pp.alt_bet_odds
+"""
+
+def get_league_python_prediction_stats(conn: sqlite3.Connection) -> Dict[int, Dict[str, Any]]:
+    """
+    Lig bazında yerel Python modelinin başarısı:
+    {league_id: {"evaluated", "best_bet_total", "best_bet_correct", "best_bet_accuracy",
+                 "alt_bet_total", "alt_bet_correct", "alt_bet_accuracy", "ft_correct", "ft_accuracy"}}
+    """
+    rows = conn.execute(f"""
+        SELECT m.league_id, m.sport_type, {_PYTHON_PREDICTION_COLUMNS},
+               r.ht_home_score, r.ht_away_score, r.ft_home_score, r.ft_away_score
+        FROM matches m
+        JOIN results r ON r.match_id = m.id
+        JOIN python_predictions pp ON pp.match_id = m.id
+        WHERE m.league_id IS NOT NULL
+    """).fetchall()
+
+    stats: Dict[int, Dict[str, Any]] = {}
+    for r in rows:
+        row = dict(r)
+        evaluation = rules.evaluate_prediction(row, row, row["sport_type"])
+        s = stats.setdefault(row["league_id"], {"evaluated": 0, "best_bet_total": 0, "best_bet_correct": 0,
+                                                "alt_bet_total": 0, "alt_bet_correct": 0, "ft_correct": 0})
+        s["evaluated"] += 1
+        s["ft_correct"] += bool(evaluation["ft"])
+        for key in ("best_bet", "alt_bet"):
+            if evaluation[key] is not None:
+                s[f"{key}_total"] += 1
+                s[f"{key}_correct"] += evaluation[key]
+    for s in stats.values():
+        for key in ("best_bet", "alt_bet"):
+            s[f"{key}_accuracy"] = round(s[f"{key}_correct"] / s[f"{key}_total"] * 100, 1) if s[f"{key}_total"] else None
+        s["ft_accuracy"] = round(s["ft_correct"] / s["evaluated"] * 100, 1) if s["evaluated"] else None
+    return stats
+
+def calculate_python_prediction_accuracy(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """Yerel Python modeli için genel doğruluk ve başarı oranını hesaplar."""
+    rows = conn.execute(f"""
+        SELECT
+            m.sport_type,
+            {_PYTHON_PREDICTION_COLUMNS},
+            r.ht_home_score, r.ht_away_score, r.ft_home_score, r.ft_away_score, r.is_over_3_goals, r.is_kg_var
+        FROM python_predictions pp
+        JOIN results r ON pp.match_id = r.match_id
+        JOIN matches m ON m.id = pp.match_id
+    """).fetchall()
+
+    metrics = ("ht", "ft", "over_under", "kg", "score", "best_bet", "alt_bet")
+    correct = {k: 0 for k in metrics}
+    evaluated = {k: 0 for k in metrics}
+
+    for r in rows:
+        row = dict(r)
+        evaluation = rules.evaluate_prediction(row, row, row["sport_type"])
+        for key in metrics:
+            if evaluation[key] is not None:
+                evaluated[key] += 1
+                correct[key] += evaluation[key]
+
+    def pct(key: str) -> float:
+        return round(correct[key] / evaluated[key] * 100, 1) if evaluated[key] else 0.0
+
+    main = ("ht", "ft", "over_under", "kg")
+    main_evaluated = sum(evaluated[k] for k in main)
+    overall = sum(correct[k] for k in main) / main_evaluated * 100 if main_evaluated else 0.0
+
+    return {
+        "total_evaluated": len(rows),
+        "ht_correct": correct["ht"], "ht_total": evaluated["ht"], "ht_accuracy": pct("ht"),
+        "ft_correct": correct["ft"], "ft_total": evaluated["ft"], "ft_accuracy": pct("ft"),
+        "ou_correct": correct["over_under"], "ou_total": evaluated["over_under"], "over_under_3_accuracy": pct("over_under"),
+        "kg_correct": correct["kg"], "kg_total": evaluated["kg"], "kg_accuracy": pct("kg"),
+        "score_correct": correct["score"], "score_total": evaluated["score"], "score_accuracy": pct("score"),
+        "best_bet_correct": correct["best_bet"], "best_bet_total": evaluated["best_bet"], "best_bet_accuracy": pct("best_bet"),
+        "alt_bet_correct": correct["alt_bet"], "alt_bet_total": evaluated["alt_bet"], "alt_bet_accuracy": pct("alt_bet"),
+        "overall_accuracy": round(overall, 1),
+    }
+
+def calculate_common_prediction_accuracy(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """
+    Gemini ve Python modelini ADİL kıyaslamak için: yalnızca ikisinin de tahmini ve sonucu olan maçlarda
+    Tercih 1 (⭐) ve 2. tercih isabeti. {"matches", "gemini": {...}, "python": {...}}; her model için
+    best_bet_total / best_bet_correct / best_bet_accuracy ve alt_bet_* alanları.
+    """
+    rows = conn.execute(f"""
+        SELECT m.sport_type, r.ht_home_score, r.ht_away_score, r.ft_home_score, r.ft_away_score,
+               p.predicted_ht_result AS g_ht, p.predicted_ft_result AS g_ft, p.predicted_over_under_3 AS g_ou, p.predicted_kg AS g_kg,
+               p.best_bet_market AS g_best_market, p.best_bet_selection AS g_best_selection,
+               p.alt_bet_market AS g_alt_market, p.alt_bet_selection AS g_alt_selection,
+               pp.best_bet_market AS p_best_market, pp.best_bet_selection AS p_best_selection,
+               pp.alt_bet_market AS p_alt_market, pp.alt_bet_selection AS p_alt_selection
+        FROM matches m
+        JOIN results r ON r.match_id = m.id
+        {_LATEST_PREDICTION_JOIN}
+        JOIN python_predictions pp ON pp.match_id = m.id
+        WHERE p.id IS NOT NULL
+    """).fetchall()
+
+    totals = {model: {"best_bet_total": 0, "best_bet_correct": 0, "alt_bet_total": 0, "alt_bet_correct": 0}
+              for model in ("gemini", "python")}
+    for r in rows:
+        for model, prefix in (("gemini", "g"), ("python", "p")):
+            for key in ("best", "alt"):
+                won = rules.selection_won(r[f"{prefix}_{key}_market"], r[f"{prefix}_{key}_selection"], dict(r))
+                if won is not None:
+                    totals[model][f"{key}_bet_total"] += 1
+                    totals[model][f"{key}_bet_correct"] += bool(won)
+    for stats in totals.values():
+        for key in ("best_bet", "alt_bet"):
+            stats[f"{key}_accuracy"] = round(stats[f"{key}_correct"] / stats[f"{key}_total"] * 100, 1) if stats[f"{key}_total"] else None
+    return {"matches": len(rows), **totals}
+
+def get_leagues_accuracy_report(conn: sqlite3.Connection, model: str = "gemini", query: str = "") -> Dict[str, Any]:
+    """Lig Yönetimi ve Tercih İsabetleri için belirtilen modele (gemini veya python) göre başarı raporu döner."""
+    is_python = (model.lower() == "python")
+    sql = """
+        SELECT
+            l.id, l.name, l.sport_type, l.gemini_analysis,
+            COUNT(m.id) as total_matches,
+            SUM(CASE WHEN m.match_completed = 0 THEN 1 ELSE 0 END) as unfinished_matches,
+            SUM(CASE WHEN m.status = 'ANALYZED' AND m.match_completed = 0 THEN 1 ELSE 0 END) as analyzed_matches
+        FROM leagues l
+        LEFT JOIN matches m ON l.id = m.league_id
+        WHERE 1=1
+    """
+    params = []
+    if query:
+        sql += " AND l.name LIKE ?"
+        params.append(f"%{query}%")
+
+    sql += " GROUP BY l.id ORDER BY unfinished_matches DESC, total_matches DESC, l.name ASC"
+
+    if is_python:
+        prediction_stats = get_league_python_prediction_stats(conn)
+        accuracy_overall = calculate_python_prediction_accuracy(conn)
+    else:
+        prediction_stats = get_league_prediction_stats(conn)
+        accuracy_overall = calculate_prediction_accuracy(conn)
+
+    empty_stats = {"evaluated": 0, "best_bet_total": 0, "best_bet_correct": 0, "best_bet_accuracy": None,
+                   "alt_bet_total": 0, "alt_bet_correct": 0, "alt_bet_accuracy": None, "ft_accuracy": None}
+
+    leagues = [
         {
             "id": r["id"],
             "name": r["name"],
@@ -550,6 +752,39 @@ def get_leagues_admin(conn: sqlite3.Connection, query: str = "") -> List[Dict[st
         }
         for r in conn.execute(sql, params).fetchall()
     ]
+
+    evaluated_leagues = [l for l in leagues if l.get("evaluated", 0) > 0]
+    evaluated_leagues.sort(
+        key=lambda x: (
+            x["best_bet_accuracy"] if x["best_bet_accuracy"] is not None else -1,
+            x.get("best_bet_total", 0)
+        ),
+        reverse=True
+    )
+    top_league = evaluated_leagues[0] if evaluated_leagues else None
+
+    return {
+        "model": "python" if is_python else "gemini",
+        "summary": {
+            "total_evaluated_matches": accuracy_overall["total_evaluated"],
+            "best_bet_correct": accuracy_overall["best_bet_correct"],
+            "best_bet_total": accuracy_overall["best_bet_total"],
+            "best_bet_accuracy": accuracy_overall["best_bet_accuracy"],
+            "alt_bet_correct": accuracy_overall["alt_bet_correct"],
+            "alt_bet_total": accuracy_overall["alt_bet_total"],
+            "alt_bet_accuracy": accuracy_overall["alt_bet_accuracy"],
+            "evaluated_leagues_count": len(evaluated_leagues),
+            "total_leagues_count": len(leagues),
+            "top_league": {
+                "name": top_league["name"],
+                "accuracy": top_league["best_bet_accuracy"],
+                "total": top_league["best_bet_total"],
+                "correct": top_league["best_bet_correct"]
+            } if top_league else None
+        },
+        "common": calculate_common_prediction_accuracy(conn),
+        "leagues": leagues
+    }
 
 def set_league_gemini_analysis(conn: sqlite3.Connection, league_id: int, enabled: bool) -> bool:
     """Belirtilen ligin Gemini AI analiz iznini günceller."""
@@ -871,10 +1106,20 @@ def _enrich_matches(conn: sqlite3.Connection, rows: List[sqlite3.Row]) -> List[D
     odds_by_match = _get_odds_by_match(conn, match_ids)
     played = get_played_match_ids(conn, match_ids)
     league_stats = get_league_prediction_stats(conn)
+    python_preds = get_python_predictions_by_matches(conn, match_ids)
     for m in matches:
         add_local_time_fields(m)
         m["odds"] = odds_by_match.get(m["id"], [])
         m["played"] = m["id"] in played
+        py_p = python_preds.get(m["id"])
+        if py_p and m.get("ft_home_score") is not None and py_p.get("predicted_ft_result"):
+            py_ev = rules.evaluate_prediction(py_p, m, m["sport_type"])
+            py_p["evaluation"] = py_ev
+            py_p["is_prediction_correct"] = py_ev["ft"]
+            py_p["ht_correct"] = py_ev["ht"]
+            py_p["best_bet_correct"] = py_ev["best_bet"]
+            py_p["alt_bet_correct"] = py_ev["alt_bet"]
+        m["python_prediction"] = py_p
         l_stat = league_stats.get(m.get("league_id"), {})
         m["league_accuracy"] = l_stat.get("best_bet_accuracy")
         m["league_ft_accuracy"] = l_stat.get("ft_accuracy")
@@ -1159,7 +1404,8 @@ def get_match_full_context(conn: sqlite3.Connection, match_id: int) -> Optional[
         "home_last": _load_json(stats, "home_last_matches_json"),
         "away_last": _load_json(stats, "away_last_matches_json"),
         "missing": _load_json(stats, "missing_players_json"),
-        "league_table": _load_json(stats, "league_table_json")
+        "league_table": _load_json(stats, "league_table_json"),
+        "python_prediction": get_python_prediction(conn, match_id)
     }
 
 def get_match_predictions(conn: sqlite3.Connection, match_id: int) -> List[Dict[str, Any]]:
@@ -1306,5 +1552,131 @@ def clear_db(db_path: str = DB_FILE) -> None:
     """Veritabanındaki tüm veri tablolarını temizler (settings tablosundaki panel ayarları korunur)."""
     with db_session(db_path) as conn:
         # Foreign key bağımlılık sırasına göre (çocuk tablolardan ebeveynlere)
-        for table in ("results", "predictions", "match_stats", "odds", "matches", "leagues", "teams"):
+        for table in ("results", "predictions", "python_predictions", "match_stats", "odds", "matches", "leagues", "teams"):
             conn.execute(f"DELETE FROM {table}")
+
+# ==============================================================================
+# YEREL PYTHON TAHMİNLERİ (GEMINI'DEN BAĞIMSIZ)
+# ==============================================================================
+
+def save_python_prediction(conn: sqlite3.Connection, match_id: int, data: Dict[str, Any]) -> int:
+    """Yerel Python istatistik/ML tahminini kaydeder."""
+    best_bet = data.get("best_bet") or {}
+    alt_bet = data.get("alt_bet") or {}
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO python_predictions (
+            match_id, model_type, predicted_ht_result, predicted_ht_score, predicted_ft_result,
+            predicted_score, predicted_over_under_3, predicted_kg,
+            home_win_prob, draw_prob, away_win_prob, over_3_prob, kg_prob,
+            expected_home_goals, expected_away_goals, confidence_score,
+            best_bet_market, best_bet_selection, best_bet_confidence, best_bet_reason, best_bet_odds,
+            alt_bet_market, alt_bet_selection, alt_bet_confidence, alt_bet_odds
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(match_id) DO UPDATE SET
+            model_type = excluded.model_type,
+            predicted_ht_result = excluded.predicted_ht_result,
+            predicted_ht_score = excluded.predicted_ht_score,
+            predicted_ft_result = excluded.predicted_ft_result,
+            predicted_score = excluded.predicted_score,
+            predicted_over_under_3 = excluded.predicted_over_under_3,
+            predicted_kg = excluded.predicted_kg,
+            home_win_prob = excluded.home_win_prob,
+            draw_prob = excluded.draw_prob,
+            away_win_prob = excluded.away_win_prob,
+            over_3_prob = excluded.over_3_prob,
+            kg_prob = excluded.kg_prob,
+            expected_home_goals = excluded.expected_home_goals,
+            expected_away_goals = excluded.expected_away_goals,
+            confidence_score = excluded.confidence_score,
+            best_bet_market = excluded.best_bet_market,
+            best_bet_selection = excluded.best_bet_selection,
+            best_bet_confidence = excluded.best_bet_confidence,
+            best_bet_reason = excluded.best_bet_reason,
+            best_bet_odds = excluded.best_bet_odds,
+            alt_bet_market = excluded.alt_bet_market,
+            alt_bet_selection = excluded.alt_bet_selection,
+            alt_bet_confidence = excluded.alt_bet_confidence,
+            alt_bet_odds = excluded.alt_bet_odds,
+            created_at = CURRENT_TIMESTAMP
+    """, (
+        match_id,
+        data.get("model_type", "poisson_xg"),
+        data.get("predicted_ht_result"),
+        data.get("predicted_ht_score"),
+        data.get("predicted_ft_result"),
+        data.get("predicted_score"),
+        data.get("predicted_over_under_3"),
+        data.get("predicted_kg"),
+        data.get("home_win_prob"),
+        data.get("draw_prob"),
+        data.get("away_win_prob"),
+        data.get("over_3_prob"),
+        data.get("kg_prob"),
+        data.get("expected_home_goals"),
+        data.get("expected_away_goals"),
+        data.get("confidence_score"),
+        best_bet.get("market"),
+        best_bet.get("selection"),
+        best_bet.get("confidence"),
+        best_bet.get("reason"),
+        best_bet.get("odds"),
+        alt_bet.get("market"),
+        alt_bet.get("selection"),
+        alt_bet.get("confidence"),
+        alt_bet.get("odds")
+    ))
+    return cursor.lastrowid
+
+def _format_python_pred_dict(r: Dict[str, Any]) -> Dict[str, Any]:
+    pred = dict(r)
+    pred["best_bet"] = ({
+        "market": pred.get("best_bet_market"),
+        "selection": pred.get("best_bet_selection"),
+        "confidence": pred.get("best_bet_confidence"),
+        "reason": pred.get("best_bet_reason"),
+        "odds": pred.get("best_bet_odds")
+    } if pred.get("best_bet_market") else None)
+    pred["alt_bet"] = ({
+        "market": pred.get("alt_bet_market"),
+        "selection": pred.get("alt_bet_selection"),
+        "confidence": pred.get("alt_bet_confidence"),
+        "odds": pred.get("alt_bet_odds")
+    } if pred.get("alt_bet_market") else None)
+    return pred
+
+def get_python_prediction(conn: sqlite3.Connection, match_id: int) -> Optional[Dict[str, Any]]:
+    """Belirtilen maçın yerel Python tahminini döner."""
+    row = conn.execute("""
+        SELECT * FROM python_predictions WHERE match_id = ?
+    """, (match_id,)).fetchone()
+    return _format_python_pred_dict(dict(row)) if row else None
+
+def get_python_predictions_by_matches(conn: sqlite3.Connection, match_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    """Toplu maç sorgusu: match_id -> python_prediction sözlüğü döner (Zero SQL in loop)."""
+    if not match_ids:
+        return {}
+    placeholders = ",".join("?" for _ in match_ids)
+    rows = conn.execute(f"""
+        SELECT * FROM python_predictions WHERE match_id IN ({placeholders})
+    """, match_ids).fetchall()
+    return {r["match_id"]: _format_python_pred_dict(dict(r)) for r in rows}
+
+def get_matches_for_python_sync(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Gemini analizi olan, gerekli tüm istatistikleri (Ev/Dep son maçlar, H2H, Lig izni) tam olan ve henüz Python tahmini hesaplanmamış maçları getirir."""
+    rows = conn.execute("""
+        SELECT m.id, m.code, m.home_team_id, m.away_team_id, m.league_id, m.sport_type
+        FROM matches m
+        JOIN predictions p ON p.match_id = m.id
+        JOIN match_stats ms ON ms.match_id = m.id
+        LEFT JOIN leagues l ON l.id = m.league_id
+        LEFT JOIN python_predictions pp ON pp.match_id = m.id
+        WHERE pp.id IS NULL
+          AND ms.home_last_matches_json IS NOT NULL
+          AND ms.away_last_matches_json IS NOT NULL
+          AND ms.h2h_json IS NOT NULL
+          AND (l.gemini_analysis = 1 OR l.id IS NULL)
+        GROUP BY m.id
+    """).fetchall()
+    return [dict(r) for r in rows]

@@ -6,6 +6,7 @@ import database
 import data_source
 import gemini_engine
 import match_data
+import python_engine
 import rules
 import stats_sync
 
@@ -275,6 +276,10 @@ def _predict_and_save(match_id: int) -> None:
     prediction = gemini_engine.generate_prediction(context, model_name=config.GEMINI_MODEL)
     with database.db_session() as conn:
         database.save_prediction(conn, match_id, prediction)
+        try:
+            python_engine.generate_python_prediction(conn, match_id)
+        except Exception:
+            pass
     display_prediction_card(context["match"], prediction, context.get("odds"))
 
 def run_single_prediction() -> None:

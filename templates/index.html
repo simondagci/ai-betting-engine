@@ -13,9 +13,11 @@
             <span class="brand-text">AI Betting Engine</span>
         </a>
         <nav class="global-nav" aria-label="Ana menü">
-            <button class="global-nav-item active" data-tab="matches" type="button">Maçlar</button>
+            <button class="global-nav-item active" data-tab="matches" type="button">🔮 Maçlar (Gemini)</button>
+            <button class="global-nav-item" data-tab="python-matches" type="button">⚡ Maçlar (Python)</button>
             <button class="global-nav-item" data-tab="coupon" type="button">🎟️ Kupon</button>
-            <button class="global-nav-item" data-tab="accuracy" type="button">📊 Tercih İsabetleri</button>
+            <button class="global-nav-item" data-tab="accuracy" type="button">📊 Tercih İsabetleri (Gemini)</button>
+            <button class="global-nav-item" data-tab="python-accuracy" type="button">📈 Tercih İsabetleri (Python)</button>
             <button class="global-nav-item" data-tab="admin" type="button">Lig Yönetimi</button>
         </nav>
         <div class="header-meta">Saatler: 🇩🇪 Europe/Berlin</div>
@@ -47,7 +49,7 @@
                         <div class="page-header-title-area">
                             <div class="object-icon">📋</div>
                             <div>
-                                <div class="object-label">Maçlar</div>
+                                <div class="object-label" id="matchesObjectLabel">🔮 Maçlar (Gemini AI)</div>
                                 <select class="view-picker" id="viewPicker" aria-label="Liste görünümü">
                                     <option value="UNFINISHED">⏳ Bitmemiş Maçlar</option>
                                     <option value="COMPLETED_2DAYS">🏁 Son 2 Günde Bitenler (Skorlu)</option>
@@ -256,6 +258,11 @@
                     <div class="kpi-sub" id="accKpiTopLeagueSub">—</div>
                 </div>
                 <div class="card kpi-card">
+                    <div class="kpi-label">⚖️ Ortak Maçlarda ⭐ İsabet</div>
+                    <div class="kpi-value" id="accKpiCommon" style="font-size:18px; line-height:1.3;">—</div>
+                    <div class="kpi-sub" id="accKpiCommonSub">Gemini ve Python'un ikisinin de tahmin ettiği maçlar</div>
+                </div>
+                <div class="card kpi-card">
                     <div class="kpi-label">Sonuçlanan Lig / Maç</div>
                     <div class="kpi-value" id="accKpiCounts">—</div>
                     <div class="kpi-sub" id="accKpiCountsSub">Değerlendirilen veriler</div>
@@ -268,14 +275,14 @@
                         <div class="page-header-title-area">
                             <div class="object-icon" style="background:#fef3c7; color:#d97706;">📊</div>
                             <div>
-                                <div class="object-label">Performans Analizi</div>
-                                <h2 class="page-title">Liglere Göre Tercih Başarı Oranları</h2>
+                                <div class="object-label" id="accuracyObjectLabel">Performans Analizi (Gemini)</div>
+                                <h2 class="page-title" id="accuracyPageTitle">Liglere Göre Tercih Başarı Oranları (Gemini)</h2>
                             </div>
                         </div>
                         <button class="btn btn-sm" id="btnRefreshAccuracy" type="button">↻ Yenile</button>
                     </div>
                 </div>
-                <p class="muted" style="margin:4px 0 16px 0; font-size:13px;">
+                <p class="muted" id="accuracyPageDesc" style="margin:4px 0 16px 0; font-size:13px;">
                     Yapay zekanın maçlar için belirlediği Tercih 1 (⭐ en güçlü tercih) ve 2. Tercih (alt_bet) seçimlerinin lig bazındaki tutma ve gerçekleşme oranları.
                 </p>
 
@@ -393,15 +400,17 @@
                                 <th class="num sortable" data-sort="total_matches">Toplam Maç</th>
                                 <th class="num sortable" data-sort="unfinished_matches">Bitmemiş</th>
                                 <th class="num sortable" data-sort="analyzed_matches">Analizli</th>
-                                <th class="num sortable" data-sort="evaluated" title="Sonucu girilmiş ve Gemini tahmini olan maç sayısı">Değerlendirilen</th>
-                                <th class="num sortable" data-sort="best_bet_accuracy" title="Gemini'nin en güçlü tercihinin (⭐) tutma oranı">⭐ İsabet</th>
-                                <th class="num sortable" data-sort="alt_bet_accuracy" title="2. tercihin (⭐ oranı düşükken önerilen) tutma oranı">2. Tercih İsabet</th>
+                                <th class="num sortable" data-sort="evaluated" title="Sonucu girilmiş maç sayısı">Değerlendirilen</th>
+                                <th class="num sortable" data-sort="best_bet_accuracy" title="Gemini'nin en güçlü tercihinin (⭐) tutma oranı">⭐ İsabet (Gemini)</th>
+                                <th class="num sortable" data-sort="python_best_bet_accuracy" title="Python modelinin en güçlü tercihinin (⭐) tutma oranı">⭐ İsabet (Python)</th>
+                                <th class="num sortable" data-sort="alt_bet_accuracy" title="Gemini 2. tercihin tutma oranı">2. Tercih (Gemini)</th>
+                                <th class="num sortable" data-sort="python_alt_bet_accuracy" title="Python 2. tercihin tutma oranı">2. Tercih (Python)</th>
                                 <th class="center sortable" data-sort="gemini_analysis">Gemini İzni</th>
                                 <th></th>
                             </tr>
                         </thead>
                         <tbody id="leaguesBody">
-                            <tr><td class="empty-state" colspan="11">Ligler yükleniyor...</td></tr>
+                            <tr><td class="empty-state" colspan="13">Ligler yükleniyor...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -495,6 +504,8 @@
             accuracyLeagues: [],
             view: 'UNFINISHED',
             subFilter: 'ALL',
+            predictionModel: 'gemini',   // 'gemini' | 'python'
+            accuracyModel: 'gemini',     // 'gemini' | 'python'
             sort: { key: null, dir: 1 },
             leagueSort: { key: 'unfinished_matches', dir: -1 },
             accuracySort: { key: 'best_bet_accuracy', dir: -1 },
@@ -502,16 +513,33 @@
         };
 
         // ==================== TABS ====================
-        // URL hash: '' (Maçlar), '#coupon' (Kupon Motoru), '#accuracy' (Tercih İsabetleri), '#admin' (Ligler & Bülten), '#admin/settings' (Ayarlar)
+        // URL hash: '' (Maçlar Gemini), '#python-matches' (Maçlar Python), '#coupon' (Kupon Motoru), '#accuracy' (Tercih İsabetleri Gemini), '#python-accuracy' (Tercih İsabetleri Python), '#admin' (Ligler & Bülten), '#admin/settings' (Ayarlar)
         function showTab(tab, adminPage = 'leagues') {
             document.querySelectorAll('.global-nav-item').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-            document.getElementById('tab-matches').hidden = tab !== 'matches';
+            const isMatchTab = (tab === 'matches' || tab === 'python-matches');
+            const isAccuracyTab = (tab === 'accuracy' || tab === 'python-accuracy');
+
+            document.getElementById('tab-matches').hidden = !isMatchTab;
             document.getElementById('tab-coupon').hidden = tab !== 'coupon';
-            document.getElementById('tab-accuracy').hidden = tab !== 'accuracy';
+            document.getElementById('tab-accuracy').hidden = !isAccuracyTab;
             document.getElementById('tab-admin').hidden = tab !== 'admin';
 
             let hash = '';
-            if (tab === 'admin') {
+            if (tab === 'python-matches') {
+                state.predictionModel = 'python';
+                hash = '#python-matches';
+                document.getElementById('matchesObjectLabel').textContent = '⚡ Maçlar (Python Modeli)';
+                document.getElementById('btnAnalyzeAllFromList').textContent = '⚡ Python ile Tümünü Senkronize Et';
+                document.getElementById('btnAnalyzeAllFromList').title = 'Tüm maçlar için yerel Python ML tahminlerini günceller';
+                renderMatches();
+            } else if (tab === 'matches') {
+                state.predictionModel = 'gemini';
+                hash = '';
+                document.getElementById('matchesObjectLabel').textContent = '🔮 Maçlar (Gemini AI)';
+                document.getElementById('btnAnalyzeAllFromList').textContent = '🔮 Maçları Analiz Et';
+                document.getElementById('btnAnalyzeAllFromList').title = "Bitmemiş, analiz edilmemiş ve verisi tam tüm maçları Gemini'ye gönderir";
+                renderMatches();
+            } else if (tab === 'admin') {
                 document.querySelectorAll('[data-admin-page]').forEach(b => b.classList.toggle('active', b.dataset.adminPage === adminPage));
                 document.getElementById('admin-page-leagues').hidden = adminPage !== 'leagues';
                 document.getElementById('admin-page-settings').hidden = adminPage !== 'settings';
@@ -521,9 +549,14 @@
                 hash = '#coupon';
                 loadCouponRules();
                 loadPlayedCoupons();
+            } else if (tab === 'python-accuracy') {
+                state.accuracyModel = 'python';
+                hash = '#python-accuracy';
+                loadAccuracy('python');
             } else if (tab === 'accuracy') {
+                state.accuracyModel = 'gemini';
                 hash = '#accuracy';
-                loadAccuracy();
+                loadAccuracy('gemini');
             }
             history.replaceState(null, '', location.pathname + location.search + hash);
         }
@@ -532,6 +565,8 @@
             const [tab, page] = location.hash.replace('#', '').split('/');
             if (tab === 'admin') showTab('admin', page === 'settings' ? 'settings' : 'leagues');
             else if (tab === 'coupon') showTab('coupon');
+            else if (tab === 'python-matches') showTab('python-matches');
+            else if (tab === 'python-accuracy') showTab('python-accuracy');
             else if (tab === 'accuracy') showTab('accuracy');
             else showTab('matches');
         }
@@ -610,21 +645,52 @@
         };
 
         function columns() {
+            const isPy = state.predictionModel === 'python';
+            const predLabel = isPy ? 'Python Tahmini' : 'Gemini Tahmini';
+            const bestLabel = isPy ? 'Python 1. Tercih' : 'Önerilen Tercih';
+            const altLabel = isPy ? 'Python 2. Tercih' : '2. Tercih';
+
             if (isCompletedView()) {
                 return [
                     { key: 'code', label: 'Maç Kodu', sort: m => Number(m.code) || m.code },
                     { key: 'date', label: 'Tarih (DE)', sort: chronoKey },
                     { key: 'teams', label: 'Karşılaşma', sort: m => (m.home_team || '').toLowerCase() },
                     { key: 'score', label: 'Skor (MS / İY)', sort: m => hasScore(m) ? m.ft_home_score + m.ft_away_score : -1 },
-                    { key: 'eval', label: 'İsabet', sort: m => m.is_prediction_correct === true ? 1 : 0 },
+                    { key: 'eval', label: 'İsabet', sort: m => {
+                        if (isPy) {
+                            return (m.python_prediction && m.python_prediction.is_prediction_correct === true) ? 1 : 0;
+                        }
+                        return m.is_prediction_correct === true ? 1 : 0;
+                    }},
                     { key: 'league_name', label: 'Lig', sort: m => (m.league_name || '').toLowerCase() },
-                    { key: 'prediction', label: 'Gemini Tahmini', sort: m => m.predicted_score || '' },
-                    { key: 'confidence_score', label: 'Güven', sort: m => m.confidence_score ?? -1 },
-                    { key: 'best_bet_selection', label: 'Önerilen Tercih', sort: m => m.best_bet_selection || null },
-                    { key: 'best_bet_odds', label: 'Oran', num: true, sort: m => m.best_bet_odds ?? null },
-                    { key: 'best_bet_confidence', label: 'Tercih %', num: true, sort: m => m.best_bet_confidence ?? null },
-                    { key: 'alt_bet_selection', label: '2. Tercih', sort: m => m.alt_bet_selection || null },
-                    { key: 'alt_bet_confidence', label: '2. Tercih %', num: true, sort: m => m.alt_bet_confidence ?? null },
+                    { key: 'prediction', label: predLabel, sort: m => {
+                        const p = isPy ? m.python_prediction : m;
+                        return (p && p.predicted_score) || '';
+                    }},
+                    { key: 'confidence_score', label: 'Güven', sort: m => {
+                        const p = isPy ? m.python_prediction : m;
+                        return (p && p.confidence_score) ?? -1;
+                    }},
+                    { key: 'best_bet_selection', label: bestLabel, sort: m => {
+                        if (isPy) return (m.python_prediction && m.python_prediction.best_bet && m.python_prediction.best_bet.selection) || null;
+                        return m.best_bet_selection || null;
+                    }},
+                    { key: 'best_bet_odds', label: 'Oran', num: true, sort: m => {
+                        if (isPy) return (m.python_prediction && m.python_prediction.best_bet && m.python_prediction.best_bet.odds) ?? null;
+                        return m.best_bet_odds ?? null;
+                    }},
+                    { key: 'best_bet_confidence', label: 'Tercih %', num: true, sort: m => {
+                        if (isPy) return (m.python_prediction && m.python_prediction.best_bet && m.python_prediction.best_bet.confidence) ?? null;
+                        return m.best_bet_confidence ?? null;
+                    }},
+                    { key: 'alt_bet_selection', label: altLabel, sort: m => {
+                        if (isPy) return (m.python_prediction && m.python_prediction.alt_bet && m.python_prediction.alt_bet.selection) || null;
+                        return m.alt_bet_selection || null;
+                    }},
+                    { key: 'alt_bet_confidence', label: '2. Tercih %', num: true, sort: m => {
+                        if (isPy) return (m.python_prediction && m.python_prediction.alt_bet && m.python_prediction.alt_bet.confidence) ?? null;
+                        return m.alt_bet_confidence ?? null;
+                    }},
                     { key: 'ms1', label: 'MS 1', num: true, sort: m => m._odds.ms1 },
                     { key: 'ms0', label: 'MS 0', num: true, sort: m => m._odds.ms0 },
                     { key: 'ms2', label: 'MS 2', num: true, sort: m => m._odds.ms2 },
@@ -643,14 +709,38 @@
                 { key: 'ms2', label: 'MS 2', num: true, sort: m => m._odds.ms2 },
                 { key: 'u25', label: '2.5 Üst', num: true, sort: m => m._odds.u25 },
                 { key: 'kg', label: 'KG Var', num: true, sort: m => m._odds.kg },
-                { key: 'prediction', label: 'Gemini Tahmini', sort: m => m.predicted_score || '' },
-                { key: 'confidence_score', label: 'Güven', sort: m => m.confidence_score ?? -1 },
-                { key: 'best_bet_selection', label: 'Önerilen Tercih', sort: m => m.best_bet_selection || null },
-                { key: 'best_bet_odds', label: 'Oran', num: true, sort: m => m.best_bet_odds ?? null },
-                { key: 'best_bet_confidence', label: 'Tercih %', num: true, sort: m => m.best_bet_confidence ?? null },
-                { key: 'alt_bet_selection', label: '2. Tercih', sort: m => m.alt_bet_selection || null },
-                { key: 'alt_bet_confidence', label: '2. Tercih %', num: true, sort: m => m.alt_bet_confidence ?? null },
-                { key: 'status', label: 'Durum', sort: m => m.predicted_score ? 1 : 0 },
+                { key: 'prediction', label: predLabel, sort: m => {
+                    const p = isPy ? m.python_prediction : m;
+                    return (p && p.predicted_score) || '';
+                }},
+                { key: 'confidence_score', label: 'Güven', sort: m => {
+                    const p = isPy ? m.python_prediction : m;
+                    return (p && p.confidence_score) ?? -1;
+                }},
+                { key: 'best_bet_selection', label: bestLabel, sort: m => {
+                    if (isPy) return (m.python_prediction && m.python_prediction.best_bet && m.python_prediction.best_bet.selection) || null;
+                    return m.best_bet_selection || null;
+                }},
+                { key: 'best_bet_odds', label: 'Oran', num: true, sort: m => {
+                    if (isPy) return (m.python_prediction && m.python_prediction.best_bet && m.python_prediction.best_bet.odds) ?? null;
+                    return m.best_bet_odds ?? null;
+                }},
+                { key: 'best_bet_confidence', label: 'Tercih %', num: true, sort: m => {
+                    if (isPy) return (m.python_prediction && m.python_prediction.best_bet && m.python_prediction.best_bet.confidence) ?? null;
+                    return m.best_bet_confidence ?? null;
+                }},
+                { key: 'alt_bet_selection', label: altLabel, sort: m => {
+                    if (isPy) return (m.python_prediction && m.python_prediction.alt_bet && m.python_prediction.alt_bet.selection) || null;
+                    return m.alt_bet_selection || null;
+                }},
+                { key: 'alt_bet_confidence', label: '2. Tercih %', num: true, sort: m => {
+                    if (isPy) return (m.python_prediction && m.python_prediction.alt_bet && m.python_prediction.alt_bet.confidence) ?? null;
+                    return m.alt_bet_confidence ?? null;
+                }},
+                { key: 'status', label: 'Durum', sort: m => {
+                    const p = isPy ? m.python_prediction : m;
+                    return (p && p.predicted_score) ? 1 : 0;
+                }},
                 { key: 'actions', label: '' },
             ];
         }
@@ -673,14 +763,24 @@
 
         function filteredMatches() {
             const q = document.getElementById('matchSearch').value.toLowerCase().trim();
+            const isPy = state.predictionModel === 'python';
             let rows = state.matches.filter(m => {
                 if (q && !`${m.code} ${m.home_team} ${m.away_team} ${m.league_name}`.toLowerCase().includes(q)) return false;
+                const p = isPy ? m.python_prediction : m;
+                const hasP = Boolean(p && p.predicted_score);
+                const isWon = isPy
+                    ? Boolean(p && (p.is_prediction_correct === true || p.best_bet_correct === true || p.alt_bet_correct === true))
+                    : (m.is_prediction_correct === true || m.best_bet_correct === true || m.alt_bet_correct === true);
+                const isLost = isPy
+                    ? Boolean(p && (p.is_prediction_correct === false || p.best_bet_correct === false || p.alt_bet_correct === false))
+                    : (m.is_prediction_correct === false || m.best_bet_correct === false || m.alt_bet_correct === false);
+
                 switch (state.subFilter) {
-                    case 'ANALYZED': return Boolean(m.predicted_score);
-                    case 'PENDING': return !m.predicted_score;
+                    case 'ANALYZED': return hasP;
+                    case 'PENDING': return !hasP;
                     case 'HAS_SCORE': return hasScore(m);
-                    case 'WON': return m.is_prediction_correct === true || m.best_bet_correct === true || m.alt_bet_correct === true;
-                    case 'LOST': return m.is_prediction_correct === false || m.best_bet_correct === false || m.alt_bet_correct === false;
+                    case 'WON': return isWon;
+                    case 'LOST': return isLost;
                     case 'FOOTBALL': return m.sport_type === 'FOOTBALL';
                     case 'BASKETBALL': return m.sport_type === 'BASKETBALL';
                     default: return true;
@@ -738,26 +838,67 @@
             const detailUrl = `/matches/${m.id}`;
             const trTitle = `Türkiye saati: ${m.tr_date || m.match_date} ${m.tr_time || m.match_time}`;
 
-            const prediction = m.predicted_score
-                ? `<div><strong>${esc(m.predicted_ft_result || '—')}</strong> · ${esc(m.predicted_score)}</div>
-                   <div class="cell-sub">${esc(predictionSubline(m, m.sport_type))}</div>`
+            const isPy = state.predictionModel === 'python';
+            const p = isPy ? m.python_prediction : m;
+            const otherP = isPy ? m : m.python_prediction;
+
+            // Karşılaştırma / mutabakat rozeti (Önerilen 1. Tercihe göre)
+            const gBest = isPy ? (otherP && otherP.best_bet_selection) : (p && p.best_bet_selection);
+            const pBest = isPy ? (p && p.best_bet && p.best_bet.selection) : (otherP && otherP.best_bet && otherP.best_bet.selection);
+
+            let consensus = '';
+            if (gBest && pBest) {
+                const isAgree = (gBest === pBest);
+                const otherLabel = isPy ? 'Gemini' : 'Python';
+                consensus = isAgree
+                    ? `<div style="margin-top:3px;"><span class="badge badge-success" style="font-size:10px; padding:1px 5px;" title="${otherLabel} ile aynı 1. Tercihte (⭐ ${esc(gBest)}) mutabık">🤝 Mutabık: ⭐ ${esc(gBest)}</span></div>`
+                    : `<div style="margin-top:3px;"><span class="badge badge-warning" style="font-size:10px; padding:1px 5px;" title="1. Tercih Farklı: Gemini ⭐ ${esc(gBest)} vs Python ⭐ ${esc(pBest)}">⚖️ ${otherLabel}: ⭐ ${esc(isPy ? gBest : pBest)}</span></div>`;
+            }
+
+            const hasPred = Boolean(p && p.predicted_score);
+            const prediction = hasPred
+                ? `<div><strong>${esc(p.predicted_ft_result || '—')}</strong> · ${esc(p.predicted_score)}</div>
+                   <div class="cell-sub">${esc(predictionSubline(p, m.sport_type))}</div>
+                   ${consensus}`
                 : '<span class="muted">—</span>';
 
             // Önerilen tercih (⭐) ve 2. tercih: biten maçlarda tuttu / tutmadı işareti de gösterilir
             const betMark = correct => correct === true ? ' <span class="text-success" title="Tuttu">✓</span>'
                 : correct === false ? ' <span class="text-error" title="Tutmadı">✗</span>' : '';
-            const bestBetCell = m.best_bet_selection
-                ? `<span class="badge badge-gold" title="Gemini'nin en güçlü tercihi">⭐ ${esc(m.best_bet_selection)}</span>${betMark(m.best_bet_correct)}`
-                : '<span class="muted">—</span>';
-            const altBetCell = m.alt_bet_selection
-                ? `<span class="badge badge-brand" title="⭐ tercihin oranı düşük olduğu için Gemini'nin 2. tercihi">${esc(m.alt_bet_selection)}</span>${betMark(m.alt_bet_correct)}
-                   ${m.alt_bet_odds ? `<div class="cell-sub">Oran ${Number(m.alt_bet_odds).toFixed(2)}</div>` : ''}`
-                : '<span class="muted">—</span>';
-            const altBetConfidence = m.alt_bet_confidence !== null && m.alt_bet_confidence !== undefined
-                ? `<strong>%${esc(m.alt_bet_confidence)}</strong>` : '<span class="muted">—</span>';
-            const bestBetOdds = m.best_bet_odds ? `<strong>${Number(m.best_bet_odds).toFixed(2)}</strong>` : '<span class="muted">—</span>';
-            const bestBetConfidence = m.best_bet_confidence !== null && m.best_bet_confidence !== undefined
-                ? `<strong>%${esc(m.best_bet_confidence)}</strong>` : '<span class="muted">—</span>';
+
+            let bestBetCell = '<span class="muted">—</span>';
+            let bestBetOdds = '<span class="muted">—</span>';
+            let bestBetConfidence = '<span class="muted">—</span>';
+            let altBetCell = '<span class="muted">—</span>';
+            let altBetConfidence = '<span class="muted">—</span>';
+
+            if (isPy) {
+                const bb = p && p.best_bet;
+                const ab = p && p.alt_bet;
+                if (bb && bb.selection) {
+                    bestBetCell = `<span class="badge badge-gold" title="Python 1. Tercihi">⭐ ${esc(bb.selection)}</span>${betMark(p.best_bet_correct)}`;
+                    if (bb.odds) bestBetOdds = `<strong>${Number(bb.odds).toFixed(2)}</strong>`;
+                    if (bb.confidence !== null && bb.confidence !== undefined) bestBetConfidence = `<strong>%${esc(bb.confidence)}</strong>`;
+                }
+                if (ab && ab.selection) {
+                    altBetCell = `<span class="badge badge-brand" title="Python 2. Tercihi">${esc(ab.selection)}</span>${betMark(p.alt_bet_correct)}
+                                  ${ab.odds ? `<div class="cell-sub">Oran ${Number(ab.odds).toFixed(2)}</div>` : ''}`;
+                    if (ab.confidence !== null && ab.confidence !== undefined) altBetConfidence = `<strong>%${esc(ab.confidence)}</strong>`;
+                }
+            } else {
+                if (m.best_bet_selection) {
+                    bestBetCell = `<span class="badge badge-gold" title="Gemini'nin en güçlü tercihi">⭐ ${esc(m.best_bet_selection)}</span>${betMark(m.best_bet_correct)}`;
+                    if (m.best_bet_odds) bestBetOdds = `<strong>${Number(m.best_bet_odds).toFixed(2)}</strong>`;
+                    if (m.best_bet_confidence !== null && m.best_bet_confidence !== undefined) bestBetConfidence = `<strong>%${esc(m.best_bet_confidence)}</strong>`;
+                }
+                if (m.alt_bet_selection) {
+                    altBetCell = `<span class="badge badge-brand" title="⭐ tercihin oranı düşük olduğu için Gemini'nin 2. tercihi">${esc(m.alt_bet_selection)}</span>${betMark(m.alt_bet_correct)}
+                                  ${m.alt_bet_odds ? `<div class="cell-sub">Oran ${Number(m.alt_bet_odds).toFixed(2)}</div>` : ''}`;
+                    if (m.alt_bet_confidence !== null && m.alt_bet_confidence !== undefined) altBetConfidence = `<strong>%${esc(m.alt_bet_confidence)}</strong>`;
+                }
+            }
+
+            const confScore = p ? p.confidence_score : null;
 
             if (isCompletedView()) {
                 const scoreCell = hasScore(m)
@@ -766,16 +907,20 @@
                     : '<span class="badge badge-warning">Skor bekleniyor</span>';
 
                 let evalCell = '<span class="muted">—</span>';
-                if (hasScore(m) && m.predicted_score) {
-                    const msBadge = m.is_prediction_correct === true
+                if (hasScore(m) && hasPred) {
+                    const isFtCorrect = isPy ? (p.is_prediction_correct) : m.is_prediction_correct;
+                    const isHtCorrect = isPy ? (p.ht_correct) : m.ht_correct;
+                    const isBestCorrect = isPy ? (p.best_bet_correct) : m.best_bet_correct;
+
+                    const msBadge = isFtCorrect === true
                         ? '<span class="badge badge-success" title="Maç Sonu Tahmini Tuttu">MS ✓</span>'
-                        : (m.is_prediction_correct === false ? '<span class="badge badge-error" title="Maç Sonu Tahmini Tutmadı">MS ✗</span>' : '');
-                    const htBadge = m.ht_correct === true
+                        : (isFtCorrect === false ? '<span class="badge badge-error" title="Maç Sonu Tahmini Tutmadı">MS ✗</span>' : '');
+                    const htBadge = isHtCorrect === true
                         ? '<span class="badge badge-success" title="İlk Yarı Tahmini Tuttu">İY ✓</span>'
-                        : (m.ht_correct === false ? '<span class="badge badge-error" title="İlk Yarı Tahmini Tutmadı">İY ✗</span>' : '');
-                    const bestBadge = m.best_bet_correct === true
+                        : (isHtCorrect === false ? '<span class="badge badge-error" title="İlk Yarı Tahmini Tutmadı">İY ✗</span>' : '');
+                    const bestBadge = isBestCorrect === true
                         ? '<span class="badge badge-gold" title="Önerilen Tercih Tuttu">⭐ ✓</span>'
-                        : (m.best_bet_correct === false ? '<span class="badge badge-error" title="Önerilen Tercih Tutmadı">⭐ ✗</span>' : '');
+                        : (isBestCorrect === false ? '<span class="badge badge-error" title="Önerilen Tercih Tutmadı">⭐ ✗</span>' : '');
                     evalCell = `<div style="display:flex; gap:4px; flex-wrap:nowrap; white-space:nowrap;">${msBadge} ${htBadge} ${bestBadge}</div>`;
                 }
 
@@ -790,7 +935,7 @@
                         <td>${evalCell}</td>
                         <td>${renderLeagueCell(m)}</td>
                         <td>${prediction}</td>
-                        <td>${confidenceBadge(m.confidence_score)}</td>
+                        <td>${confidenceBadge(confScore)}</td>
                         <td>${bestBetCell}</td>
                         <td class="num">${bestBetOdds}</td>
                         <td class="num">${bestBetConfidence}</td>
@@ -805,13 +950,23 @@
                     </tr>`;
             }
 
-            const status = statusBadge(m);
-            const action = !m.predicted_score
-                ? `<button class="btn btn-sm" type="button" data-analyze="${m.id}"
-                       ${state.geminiEnabled === false ? `disabled title="${esc(GEMINI_DISABLED_HINT)}"`
-                         : !m.stats_ready ? `disabled title="${esc(MISSING_STATS_HINT)}"` : 'title="Gemini ile analiz et"'}
-                       aria-label="${esc(m.home_team)} - ${esc(m.away_team)} maçını Gemini ile analiz et">🔮</button>`
-                : '';
+            const status = isPy
+                ? (hasPred ? '<span class="badge badge-success">Hesaplandı</span>' : '<span class="badge">Bekliyor</span>')
+                : statusBadge(m);
+
+            let action = '';
+            if (isPy) {
+                action = !hasPred
+                    ? `<button class="btn btn-sm btn-brand" type="button" data-py-analyze="${m.id}" title="Python ile hesapla" aria-label="Python ile hesapla">⚡</button>`
+                    : '';
+            } else {
+                action = !m.predicted_score
+                    ? `<button class="btn btn-sm" type="button" data-analyze="${m.id}"
+                           ${state.geminiEnabled === false ? `disabled title="${esc(GEMINI_DISABLED_HINT)}"`
+                             : !m.stats_ready ? `disabled title="${esc(MISSING_STATS_HINT)}"` : 'title="Gemini ile analiz et"'}
+                           aria-label="${esc(m.home_team)} - ${esc(m.away_team)} maçını Gemini ile analiz et">🔮</button>`
+                    : '';
+            }
 
             return `
                 <tr>
@@ -827,7 +982,7 @@
                     <td class="num">${formatOdd(o.u25)}</td>
                     <td class="num">${formatOdd(o.kg)}</td>
                     <td>${prediction}</td>
-                    <td>${confidenceBadge(m.confidence_score)}</td>
+                    <td>${confidenceBadge(confScore)}</td>
                     <td>${bestBetCell}</td>
                     <td class="num">${bestBetOdds}</td>
                     <td class="num">${bestBetConfidence}</td>
@@ -867,6 +1022,34 @@
                 } catch (err) {
                     showToast(`Analiz başarısız: ${err.message}`, 'error');
                     if (err.code === 'GEMINI_DISABLED') loadStats();
+                }
+            });
+        }
+
+        async function pythonAnalyzeMatch(matchId, btn) {
+            await withBusyButton(btn, '', async () => {
+                try {
+                    const res = await postJson(`/api/matches/${matchId}/python_analyze`);
+                    if (res.success) {
+                        showToast(`⚡ Python tahmini hesaplandı: ${res.prediction.predicted_score} (${res.prediction.predicted_ft_result})`);
+                        loadMatches({ silent: true });
+                    }
+                } catch (err) {
+                    showToast(`Python hesaplama başarısız: ${err.message}`, 'error');
+                }
+            });
+        }
+
+        async function syncPythonPredictions(btn) {
+            await withBusyButton(btn, '⚡ Senkronize ediliyor', async () => {
+                try {
+                    const res = await postJson('/api/python_engine/sync');
+                    if (res.success) {
+                        showToast(res.synced_count ? `⚡ ${res.synced_count} maçın Python tahmini güncellendi.` : 'Tüm maçların Python tahminleri zaten güncel.');
+                        loadMatches({ silent: true });
+                    }
+                } catch (err) {
+                    showToast(`Senkronizasyon başarısız: ${err.message}`, 'error');
                 }
             });
         }
@@ -1149,16 +1332,19 @@
                 renderLeagues();
             } catch (err) {
                 document.getElementById('leaguesBody').innerHTML =
-                    `<tr><td class="empty-state text-error" colspan="11">Ligler yüklenemedi: ${esc(err.message)}</td></tr>`;
+                    `<tr><td class="empty-state text-error" colspan="13">Ligler yüklenemedi: ${esc(err.message)}</td></tr>`;
             }
         }
 
         // ⭐ / 2. tercih isabeti: yüzde + (tutan / değerlendirilen). Az örnekte yanıltıcı olmasın diye örnek sayısı da gösterilir.
-        function betAccuracy(l, key) {
-            const total = l[`${key}_total`], accuracy = l[`${key}_accuracy`];
-            if (!total) return '<span class="muted">—</span>';
+        function betAccuracy(l, key, prefix = '') {
+            const propAcc = prefix ? `${prefix}_${key}_accuracy` : `${key}_accuracy`;
+            const propTot = prefix ? `${prefix}_${key}_total` : `${key}_total`;
+            const propCor = prefix ? `${prefix}_${key}_correct` : `${key}_correct`;
+            const total = l[propTot], accuracy = l[propAcc];
+            if (!total || accuracy === null || accuracy === undefined) return '<span class="muted">—</span>';
             const cls = accuracy >= 60 ? 'badge-success' : (accuracy >= 45 ? 'badge-warning' : 'badge-error');
-            return `<span class="badge ${cls}">%${esc(accuracy)}</span> <span class="cell-sub">${l[`${key}_correct`]}/${total}</span>`;
+            return `<span class="badge ${cls}">%${esc(accuracy)}</span> <span class="cell-sub">${l[propCor]}/${total}</span>`;
         }
 
         function renderLeagues() {
@@ -1192,20 +1378,22 @@
 
             const body = document.getElementById('leaguesBody');
             if (rows.length === 0) {
-                body.innerHTML = `<tr><td class="empty-state" colspan="11">Aramaya uygun lig bulunamadı.</td></tr>`;
+                body.innerHTML = `<tr><td class="empty-state" colspan="13">Aramaya uygun lig bulunamadı.</td></tr>`;
                 return;
             }
             body.innerHTML = rows.map(l => `
                 <tr>
                     <td class="muted">${l.id}</td>
-                    <td class="truncate" style="max-width:360px;" title="${esc(l.name)}"><strong>${esc(l.name)}</strong></td>
+                    <td class="truncate" style="max-width:320px;" title="${esc(l.name)}"><strong>${esc(l.name)}</strong></td>
                     <td>${sportLabel(l.sport_type)}</td>
                     <td class="num">${l.total_matches}</td>
                     <td class="num"><strong>${l.unfinished_matches}</strong></td>
                     <td class="num">${l.analyzed_matches}</td>
                     <td class="num">${l.evaluated || '<span class="muted">—</span>'}</td>
                     <td class="num">${betAccuracy(l, 'best_bet')}</td>
+                    <td class="num">${betAccuracy(l, 'best_bet', 'python')}</td>
                     <td class="num">${betAccuracy(l, 'alt_bet')}</td>
+                    <td class="num">${betAccuracy(l, 'alt_bet', 'python')}</td>
                     <td class="center">
                         <label class="toggle" title="Gemini analiz izni">
                             <input type="checkbox" data-toggle-league="${l.id}" ${l.gemini_analysis ? 'checked' : ''} aria-label="${esc(l.name)} Gemini izni">
@@ -1599,9 +1787,21 @@
             `;
         }
 
-        async function loadAccuracy() {
+        async function loadAccuracy(model = state.accuracyModel || 'gemini') {
+            state.accuracyModel = model;
+            const isPy = model === 'python';
+            const objLabel = document.getElementById('accuracyObjectLabel');
+            const pageTitle = document.getElementById('accuracyPageTitle');
+            const pageDesc = document.getElementById('accuracyPageDesc');
+
+            if (objLabel) objLabel.textContent = isPy ? '⚡ Performans Analizi (Python)' : '🔮 Performans Analizi (Gemini)';
+            if (pageTitle) pageTitle.textContent = isPy ? 'Liglere Göre Python Tercih Başarı Oranları' : 'Liglere Göre Gemini Tercih Başarı Oranları';
+            if (pageDesc) pageDesc.textContent = isPy
+                ? 'Python Hibrit ML (Random Forest + Poisson xG) modelinin Tercih 1 (⭐) ve 2. Tercih seçimlerinin lig bazındaki tutma ve gerçekleşme oranları.'
+                : 'Yapay zekanın maçlar için belirlediği Tercih 1 (⭐ en güçlü tercih) ve 2. Tercih (alt_bet) seçimlerinin lig bazındaki tutma ve gerçekleşme oranları.';
+
             try {
-                const res = await api('/api/leagues/accuracy');
+                const res = await api(`/api/leagues/accuracy?model=${model}`);
                 if (!res.success) throw new Error('Veri alınamadı.');
                 const s = res.summary;
                 document.getElementById('accKpiBestBetPct').textContent = s.best_bet_total ? `%${Number(s.best_bet_accuracy).toFixed(1)}` : '—';
@@ -1616,6 +1816,13 @@
                     document.getElementById('accKpiTopLeague').textContent = '—';
                     document.getElementById('accKpiTopLeagueSub').textContent = 'Sonuçlanan maç yok';
                 }
+
+                const c = res.common || {};
+                const pct = (m) => (m && m.best_bet_total) ? `%${Number(m.best_bet_accuracy).toFixed(1)}` : '—';
+                document.getElementById('accKpiCommon').textContent = `Gemini ${pct(c.gemini)} • Python ${pct(c.python)}`;
+                document.getElementById('accKpiCommonSub').textContent = c.matches
+                    ? `${c.matches} ortak maç (Gemini ${c.gemini.best_bet_correct}/${c.gemini.best_bet_total}, Python ${c.python.best_bet_correct}/${c.python.best_bet_total})`
+                    : 'Ortak sonuçlanmış maç yok';
 
                 document.getElementById('accKpiCounts').textContent = `${s.evaluated_leagues_count} Lig • ${s.total_evaluated_matches} Maç`;
 
@@ -1760,6 +1967,8 @@
         document.getElementById('matchesBody').addEventListener('click', e => {
             const btn = e.target.closest('[data-analyze]');
             if (btn) analyzeMatch(Number(btn.dataset.analyze), btn);
+            const pyBtn = e.target.closest('[data-py-analyze]');
+            if (pyBtn) pythonAnalyzeMatch(Number(pyBtn.dataset.pyAnalyze), pyBtn);
         });
 
         document.getElementById('btnRefreshMatches').addEventListener('click', () => loadMatches());
@@ -1768,7 +1977,13 @@
         document.getElementById('btnSyncResults').addEventListener('click', e => syncResults(e.currentTarget));
         document.getElementById('btnSyncStats').addEventListener('click', e => startStatsJob(e.currentTarget));
         document.getElementById('btnAnalyzeAll').addEventListener('click', e => startPredictionJob(e.currentTarget));
-        document.getElementById('btnAnalyzeAllFromList').addEventListener('click', e => startPredictionJob(e.currentTarget));
+        document.getElementById('btnAnalyzeAllFromList').addEventListener('click', e => {
+            if (state.predictionModel === 'python') {
+                syncPythonPredictions(e.currentTarget);
+            } else {
+                startPredictionJob(e.currentTarget);
+            }
+        });
 
         // Kupon formu ve butonları
         document.getElementById('couponForm').addEventListener('submit', e => { e.preventDefault(); generateCoupon(); });
@@ -1823,7 +2038,7 @@
         document.getElementById('accuracySearch').addEventListener('input', renderAccuracy);
         document.getElementById('accuracySportFilter').addEventListener('change', renderAccuracy);
         document.getElementById('accuracyOnlyEvaluated').addEventListener('change', renderAccuracy);
-        document.getElementById('btnRefreshAccuracy').addEventListener('click', loadAccuracy);
+        document.getElementById('btnRefreshAccuracy').addEventListener('click', () => loadAccuracy(state.accuracyModel));
 
         // ==================== BAŞLANGIÇ ====================
         window.addEventListener('DOMContentLoaded', () => {

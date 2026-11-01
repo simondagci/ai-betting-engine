@@ -1557,16 +1557,27 @@ class TestSourceSwitchAndSync(unittest.TestCase):
         self.assertTrue(generate(True)["success"])
 
     def test_leagues_accuracy_endpoint(self):
-        res = self.client.get("/api/leagues/accuracy")
+        # Gemini model testi
+        res = self.client.get("/api/leagues/accuracy?model=gemini")
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
         self.assertTrue(data["success"])
+        self.assertEqual(data["model"], "gemini")
         self.assertIn("summary", data)
         self.assertIn("leagues", data)
         summary = data["summary"]
         for key in ("best_bet_accuracy", "alt_bet_accuracy", "best_bet_total", "alt_bet_total", "total_evaluated_matches"):
             self.assertIn(key, summary)
         self.assertIsInstance(data["leagues"], list)
+
+        # Python model testi
+        res_py = self.client.get("/api/leagues/accuracy?model=python")
+        self.assertEqual(res_py.status_code, 200)
+        data_py = res_py.get_json()
+        self.assertTrue(data_py["success"])
+        self.assertEqual(data_py["model"], "python")
+        self.assertIn("summary", data_py)
+        self.assertIn("leagues", data_py)
 
     def test_predicted_ht_score_flow(self):
         with database.db_session(TEST_DB) as conn:
@@ -1590,6 +1601,251 @@ class TestSourceSwitchAndSync(unittest.TestCase):
             self.assertTrue(ev["ht"])
             self.assertTrue(ev["ht_score"])
             self.assertTrue(ev["score"])
+
+class TestPythonEngine(unittest.TestCase):
+    def setUp(self):
+        config.DB_FILE_PATH = TEST_DB
+        database.DB_FILE = TEST_DB
+        database.init_db(TEST_DB)
+        database.clear_db(TEST_DB)
+        import web_server
+        self.app = web_server.app.test_client()
+        self.sample_stats = {
+            "h2h_data": [{"date": "2025-01-01", "home": "Takım A", "away": "Takım B", "score": "1-1"}],
+            "home_last": [{"date": "2026-10-01", "home": "Takım A", "away": "Takım C", "score": "2-1"}],
+            "away_last": [{"date": "2026-10-01", "home": "Takım D", "away": "Takım B", "score": "0-1"}],
+            "missing": None,
+            "league_table": None
+        }
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            try:
+                os.remove(TEST_DB)
+            except OSError:
+                pass
+
+    def test_poisson_pmf(self):
+        import python_engine
+        p0 = python_engine.poisson_pmf(0, 1.0)
+        p1 = python_engine.poisson_pmf(1, 1.0)
+        # e^-1 ~= 0.367879
+        self.assertAlmostEqual(p0, 0.367879, places=4)
+        self.assertAlmostEqual(p1, 0.367879, places=4)
+        # Toplam olasılık 1'e yakın olmalı
+        total_p = sum(python_engine.poisson_pmf(k, 1.5) for k in range(15))
+        self.assertAlmostEqual(total_p, 1.0, places=4)
+
+    def test_generate_and_isolate_python_prediction(self):
+        import python_engine
+        with database.db_session(TEST_DB) as conn:
+            # Geçmiş sonuçlar ekle (veri seti)
+            m_past = database.save_match(conn, "PAST_1", "Real", "Barca", "La Liga", "01.01.2024", "20:00")
+            database.save_match_stats(conn, m_past, **self.sample_stats)
+            database.save_result(conn, m_past, ht_home=1, ht_away=0, ft_home=3, ft_away=1)
+
+            # Yeni maç
+            m_new = database.save_match(conn, "NEW_1", "Real", "Barca", "La Liga", "01.01.2099", "20:00")
+            database.save_match_stats(conn, m_new, **self.sample_stats)
+            database.set_all_leagues_gemini_analysis(conn, True)
+
+            # Python tahmini üret
+            res = python_engine.generate_python_prediction(conn, m_new)
+            self.assertIsNotNone(res)
+            self.assertEqual(res["model_type"], "poisson_xg")
+            self.assertIn("predicted_score", res)
+            self.assertIn("predicted_ft_result", res)
+            self.assertIn("predicted_ht_result", res)
+            self.assertIn("predicted_ht_score", res)
+            self.assertIn("home_win_prob", res)
+
+            # python_predictions tablosundan oku
+            py_pred = database.get_python_prediction(conn, m_new)
+            self.assertIsNotNone(py_pred)
+            self.assertEqual(py_pred["match_id"], m_new)
+
+            # İZOLASYON KONTROLÜ: predictions tablosu kesinlikle BOŞ olmalı!
+            gemini_preds = database.get_match_predictions(conn, m_new)
+            self.assertEqual(len(gemini_preds), 0, "Gemini predictions tablosuna Python tahmini sızmamalı!")
+
+            # Şimdi Gemini tahmini kaydedildiğinde python_predictions'ın ezilmediğini doğrula
+            database.save_prediction(conn, m_new, {
+                "predicted_ft_result": "MS 1",
+                "predicted_score": "2-1",
+                "confidence_score": 80
+            })
+            self.assertEqual(len(database.get_match_predictions(conn, m_new)), 1)
+            # Python tahmini hâlâ duruyor
+            py_pred_after = database.get_python_prediction(conn, m_new)
+            self.assertIsNotNone(py_pred_after)
+            self.assertEqual(py_pred_after["predicted_score"], py_pred["predicted_score"])
+
+    def test_api_python_analyze_and_sync(self):
+        import python_engine
+        with database.db_session(TEST_DB) as conn:
+            m_id = database.save_match(conn, "API_TEST_1", "Arsenal", "Chelsea", "Premier League", "01.01.2099", "20:00")
+            database.save_match_stats(conn, m_id, **self.sample_stats)
+            database.set_all_leagues_gemini_analysis(conn, True)
+            database.save_prediction(conn, m_id, {"predicted_ft_result": "MS 1", "predicted_score": "2-0"})
+
+        # 1. Tek maç Python analizi endpoint'i
+        res = self.app.post(f"/api/matches/{m_id}/python_analyze")
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["prediction"]["model_type"], "poisson_xg")
+
+        # 2. Toplu sync endpoint'i
+        res_sync = self.app.post("/api/python_engine/sync")
+        self.assertEqual(res_sync.status_code, 200)
+        self.assertTrue(res_sync.get_json()["success"])
+
+        # 3. Detay endpoint'inde python_prediction alanının geldiğini doğrula
+        res_det = self.app.get(f"/api/matches/{m_id}/details")
+        self.assertEqual(res_det.status_code, 200)
+        det_data = res_det.get_json()["data"]
+        self.assertIn("python_prediction", det_data)
+        self.assertIsNotNone(det_data["python_prediction"])
+        self.assertIn("predictions", det_data)
+        self.assertEqual(len(det_data["predictions"]), 1)
+
+    def test_python_blocked_when_h2h_missing(self):
+        """Gemini gibi, Python modeli de aralarındaki maçlar (H2H) yoksa tahmin üretmemelidir."""
+        import python_engine
+        with database.db_session(TEST_DB) as conn:
+            # H2H eksik maç
+            no_h2h_id = database.save_match(conn, "NO_H2H_1", "Takım X", "Takım Y", "Lig", "01.01.2099", "20:00")
+            database.set_all_leagues_gemini_analysis(conn, True)
+            database.save_match_stats(conn, no_h2h_id,
+                h2h_data=None,
+                home_last=[{"date": "2026-10-01", "home": "X", "away": "A", "score": "1-0"}],
+                away_last=[{"date": "2026-10-01", "home": "B", "away": "Y", "score": "0-1"}],
+                missing=None,
+                league_table=None
+            )
+            # 1. Doğrudan çağrıda None dönmeli
+            pred = python_engine.generate_python_prediction(conn, no_h2h_id)
+            self.assertIsNone(pred, "H2H eksik maç için Python tahmini üretilmemeli!")
+
+        # 2. Web API 409 MISSING_STATS dönmeli
+        res = self.app.post(f"/api/matches/{no_h2h_id}/python_analyze")
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.get_json()["code"], "MISSING_STATS")
+
+    def test_hybrid_random_forest_training_and_prediction(self):
+        import python_engine
+        with database.db_session(TEST_DB) as conn:
+            # 20 bitmiş maç ekleyerek Random Forest eşiğini (>= 15) aşalım
+            for i in range(20):
+                mid = database.save_match(conn, f"TRAIN_{i}", f"Team_{i%4}", f"Team_{(i+1)%4}", "Lig", "01.01.2024", "20:00")
+                database.save_match_stats(conn, mid, **self.sample_stats)
+                database.save_result(conn, mid, ht_home=1, ht_away=0, ft_home=2 if i % 2 == 0 else 0, ft_away=1)
+
+            # Test maçı ve oranlar ekle
+            test_mid = database.save_match(conn, "TEST_HYBRID_1", "Team_0", "Team_1", "Lig", "01.01.2099", "20:00")
+            database.save_match_stats(conn, test_mid, **self.sample_stats)
+            database.set_all_leagues_gemini_analysis(conn, True)
+            database.save_odds(conn, test_mid, [
+                {"market_name": "Maç Sonucu", "option_name": "MS 1", "odds_value": 1.20},
+                {"market_name": "Maç Sonucu", "option_name": "MS 0", "odds_value": 3.80},
+                {"market_name": "Maç Sonucu", "option_name": "MS 2", "odds_value": 6.50},
+                {"market_name": "Karşılıklı Gol", "option_name": "KG VAR", "odds_value": 1.75},
+                {"market_name": "3.5 Gol Alt/Üst", "option_name": "3.5 Alt", "odds_value": 1.35},
+            ])
+
+            pred = python_engine.generate_python_prediction(conn, test_mid)
+            self.assertIsNotNone(pred)
+            self.assertEqual(pred["model_type"], "hybrid_rf_poisson")
+            self.assertIn("home_win_prob", pred)
+            self.assertIn("predicted_ft_result", pred)
+            self.assertIn("predicted_over_under_3", pred)
+            self.assertIn("predicted_kg", pred)
+            self.assertGreaterEqual(pred["confidence_score"], 50)
+            # 1. Tercih ve 2. Tercih kontrolü
+            self.assertIsNotNone(pred.get("best_bet"))
+            self.assertIn("selection", pred["best_bet"])
+            self.assertIn("odds", pred["best_bet"])
+            # Oran 1.20 < 1.30 ise 2. tercih üretilmiş olmalı
+            if pred["best_bet"]["odds"] < 1.30:
+                self.assertIsNotNone(pred.get("alt_bet"))
+                self.assertGreaterEqual(pred["alt_bet"]["odds"], 1.30)
+
+    def test_ht_probabilities_come_from_poisson_not_formula(self):
+        """İY adayları Poisson İY matrisinden gelir; olasılık yoksa (basketbol) İY adayı değerlendirilmez."""
+        import python_engine
+        probs = python_engine.calculate_football_probabilities(1.6, 1.1)
+        self.assertAlmostEqual(probs["ht_home_prob"] + probs["ht_draw_prob"] + probs["ht_away_prob"], 1.0, delta=0.03)
+        odds = [{"market_name": "İlk Yarı Sonucu", "option_name": "İY 0", "odds_value": 2.10},
+                {"market_name": "İlk Yarı Sonucu", "option_name": "İY 1", "odds_value": 3.00}]
+        pred = {"home_win_prob": 0.4, "draw_prob": 0.3, "away_win_prob": 0.3, "over_3_prob": 0.3, "kg_prob": 0.5}
+        self.assertEqual(python_engine.determine_python_best_and_alt_bet(pred, odds), (None, None))
+        pred.update(ht_home_prob=0.2, ht_draw_prob=0.55, ht_away_prob=0.25)
+        best, _ = python_engine.determine_python_best_and_alt_bet(pred, odds)
+        self.assertEqual((best["market"], best["selection"], best["confidence"]), ("ht", "İY 0", 55))
+
+    def test_confidence_is_raw_probability(self):
+        """Güven yüzdesi şişirilmez: ek puan ve alt sınır yok."""
+        import python_engine
+        self.assertEqual(python_engine._confidence(0.37), 37)
+        probs = python_engine.calculate_football_probabilities(1.2, 1.2)
+        top = max(probs["home_win_prob"], probs["draw_prob"], probs["away_win_prob"])
+        self.assertAlmostEqual(probs["confidence_score"], top * 100, delta=1.5)
+        self.assertLess(probs["confidence_score"], 50)
+
+    def test_results_index_ignores_matches_from_the_future(self):
+        """Yedek ortalama yalnızca maçtan ÖNCE oynanmış maçlardan hesaplanır."""
+        import python_engine
+        index = python_engine._ResultsIndex([
+            {"home_team_id": 1, "away_team_id": 2, "league_id": 7, "sort_key": "2024-01-01 20:00", "ft_home_score": 2, "ft_away_score": 0},
+            {"home_team_id": 1, "away_team_id": 3, "league_id": 7, "sort_key": "2024-03-01 20:00", "ft_home_score": 6, "ft_away_score": 0},
+        ])
+        self.assertEqual(index.averages(1, True, 7, "2024-02-01 20:00"), (2.0, 0.0, 1))
+        self.assertEqual(index.averages(1, True, 7, "2024-01-01 20:00")[2], 0)
+
+    def test_walk_forward_trains_only_on_earlier_matches(self):
+        """Her dilim yalnızca kendinden önceki maçlarla eğitilir; tüm bitmiş maçlar tahmin edilir."""
+        import python_engine
+        with database.db_session(TEST_DB) as conn:
+            database.set_all_leagues_gemini_analysis(conn, True)
+            for i in range(40):
+                mid = database.save_match(conn, f"WF_{i}", f"Team_{i % 5}", f"Team_{(i + 2) % 5}", "Lig", f"{i + 1:02d}.01.2024", "20:00")
+                database.save_match_stats(conn, mid, **self.sample_stats)
+                database.save_result(conn, mid, ht_home=0, ht_away=0, ft_home=i % 3, ft_away=(i + 1) % 2)
+            database.set_all_leagues_gemini_analysis(conn, True)
+
+            train_sizes = []
+            real_fit = python_engine._fit_models
+            def spy(X, labels):
+                train_sizes.append(len(X))
+                return real_fit(X, labels)
+            with mock.patch.object(python_engine, "_fit_models", side_effect=spy):
+                count = python_engine.recalculate_completed_matches_walk_forward(conn)
+
+            self.assertEqual(count, 40)
+            self.assertTrue(train_sizes)
+            self.assertEqual(train_sizes, sorted(train_sizes))
+            self.assertGreaterEqual(train_sizes[0], python_engine.MIN_TRAINING_MATCHES)
+            self.assertLess(train_sizes[-1], 40, "Son dilim bile kendini görmeden eğitilmeli")
+            predicted = conn.execute("SELECT COUNT(*) FROM python_predictions").fetchone()[0]
+            self.assertEqual(predicted, 40)
+            models = {r[0] for r in conn.execute("SELECT model_type FROM python_predictions")}
+            self.assertEqual(models, {"poisson_xg", "hybrid_rf_poisson"})
+
+    def test_common_accuracy_only_counts_matches_with_both_predictions(self):
+        with database.db_session(TEST_DB) as conn:
+            both = database.save_match(conn, "COM_1", "A", "B", "Lig", "01.01.2024", "20:00")
+            only_py = database.save_match(conn, "COM_2", "C", "D", "Lig", "01.01.2024", "21:00")
+            for mid in (both, only_py):
+                database.save_result(conn, mid, ht_home=0, ht_away=0, ft_home=2, ft_away=0)
+            database.save_prediction(conn, both, {"predicted_ft_result": "MS 1", "best_bet": {"market": "ft", "selection": "MS 1", "odds": 1.5, "confidence": 70}})
+            database.save_python_prediction(conn, both, {"best_bet": {"market": "ft", "selection": "MS 2", "odds": 4.0, "confidence": 40}})
+            database.save_python_prediction(conn, only_py, {"best_bet": {"market": "ft", "selection": "MS 1", "odds": 1.5, "confidence": 70}})
+
+            common = database.calculate_common_prediction_accuracy(conn)
+            self.assertEqual(common["matches"], 1)
+            self.assertEqual(common["gemini"]["best_bet_accuracy"], 100.0)
+            self.assertEqual(common["python"]["best_bet_accuracy"], 0.0)
+            self.assertEqual(database.get_leagues_accuracy_report(conn, model="python")["common"]["matches"], 1)
 
 if __name__ == "__main__":
     unittest.main()

@@ -39,6 +39,7 @@ python3 -m unittest test_app -v
 | `iddaa_api.py` | iddaa.com bülten / istatistik / sonuç çağrıları; veriyi Nesine bülten formatına ve uygulama istatistik formatına dönüştürür |
 | `nesine_api.py` | Nesine HTTP çağrıları, market sınıflandırma (`_classify_market`, basketbol için `_classify_basketball_market`), `extract_odds_from_event`, `_clean_nesine_data_json` |
 | `database.py` | SQLite şeması (`init_db` + `ALTER TABLE` migration'ları), `db_session`, tüm sorgular, saat dilimi dönüşümü, 150 dk kuralı, doğruluk hesabı, `settings` tablosu |
+| `python_engine.py` | **Yerel Poisson xG + Random Forest tahmin motoru:** Gemini'den %100 bağımsız (`python_predictions` tablosu). Bitmiş maçlar **walk-forward** ile tahmin edilir: tarih sırasına dizilir, her dilim yalnızca kendinden önce oynanmış maçlarla eğitilir (ilk maçlar saf Poisson). Yedek ortalamalar da yalnızca maçtan önceki sonuçlardan gelir (`_ResultsIndex`). Güven yüzdesi ham model olasılığıdır (ek puan / alt sınır yok); İY olasılığı Poisson İY matrisinden gelir, olasılığı olmayan market aday olmaz. Veri toplu sorgularla yüklenir (`_load_contexts`, `_load_results_index`), döngüde SQL yok |
 | `gemini_engine.py` | Prompt oluşturma (`build_prompt`, `_build_basketball_prompt`), Pydantic şemalar (`MatchPrediction`, `BasketballPrediction`), Gemini çağrısı + retry/fallback + zaman aşımı, `finalize_best_bet` |
 | `app.py` | Terminal menüsü — `MENU_ITEMS` listesi (etiket, fonksiyon) + `main_menu()` |
 | `web_server.py` | Flask dashboard + `/api/...` JSON endpoint'leri (bkz. §7) |
@@ -96,6 +97,7 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
   - İkisi de tahminden farklı olabilir; değerlendirme `rules.selection_won` ile **seçimin kendisine** göre yapılır
     (`evaluation["best_bet"]`, `evaluation["alt_bet"]`). Oranlar `best_bet_odds` / `alt_bet_odds`'a yazılır.
     Lig Yönetimi'nde ⭐ İsabet ve 2. Tercih İsabet ayrı sütunlardır; listede "2. Tercih" ve "2. Tercih %" sütunları vardır.
+- **Gemini ve Python isabeti adil kıyaslanır:** Tercih İsabetleri sekmelerindeki "Ortak Maçlarda ⭐ İsabet" kartı yalnızca ikisinin de tahmini ve sonucu olan maçları sayar (`database.calculate_common_prediction_accuracy`). Python'un genel isabeti yalnızca kendi maç kümesini gösterir.
 - **Kupon oran kuralları dinamiktir:** maç başına min oran (`MIN_MATCH_ODDS`) ve min toplam kupon oranı (`MIN_COUPON_TOTAL_ODDS`)
   `settings` tablosundan (Lig Yönetimi › Ayarlar), yoksa `.env`'den okunur: `database.get_coupon_odds_settings`. Kodda veya arayüzde
   1.30 / 2.00 gibi değerleri **sabit yazma**; kupon isteği bu kuralları parametreyle ezemez. Maç tercihi ⭐, oranı eşiğin altındaysa
@@ -150,6 +152,7 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
 | `settings` | `key` (PK), `value`, `updated_at` — panelden kaydedilen Gemini anahtarı ve kupon oran kuralları (`min_match_odds`, `min_coupon_odds`) |
 | `coupons` | `id`, `strategy`, `total_odds`, `created_at` — oynanan kuponlar |
 | `coupon_items` | `id`, `coupon_id`, `match_id`, `pick` (`best_bet` / `alt_bet`), `market`, `selection`, `odds`, `confidence` |
+| `python_predictions` | `id`, `match_id` (UNIQUE), `model_type`, `predicted_ht_result`, `predicted_ht_score`, `predicted_ft_result`, `predicted_score`, `predicted_over_under_3`, `predicted_kg`, `home_win_prob`, `draw_prob`, `away_win_prob`, `over_3_prob`, `kg_prob`, `expected_home_goals`, `expected_away_goals`, `confidence_score`, `created_at` — yerel Python Poisson/xG tahminleri (Gemini'den %100 izole) |
 
 `CREATE TABLE IF NOT EXISTS` mevcut tabloyu güncellemez: yeni sütun için `init_db` içine `ALTER TABLE` migration ekle.
 `betting_engine.db` gerçek veri içerir.

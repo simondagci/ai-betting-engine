@@ -10,6 +10,7 @@ import config
 import database
 import gemini_engine
 import match_data
+import python_engine
 from background_job import BackgroundJob, StopJob
 
 MAX_CONSECUTIVE_ERRORS = 5
@@ -45,6 +46,10 @@ def analyze_one(match: Dict[str, Any], db_path: str = database.DB_FILE) -> str:
     prediction = gemini_engine.generate_prediction(ctx, model_name=config.GEMINI_MODEL)
     with database.db_session(db_path) as conn:
         database.save_prediction(conn, match["id"], prediction)
+        try:
+            python_engine.generate_python_prediction(conn, match["id"])
+        except Exception:
+            pass
     return "analyzed"
 
 def start_background(db_path: str = database.DB_FILE) -> Dict[str, Any]:

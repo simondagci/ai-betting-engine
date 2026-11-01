@@ -12,6 +12,7 @@ import data_source
 import gemini_engine
 import match_data
 import prediction_batch
+import python_engine
 import results_sync
 import rules
 import stats_sync
@@ -110,9 +111,11 @@ def api_match_details(match_id: int):
         ctx["predictions"] = database.get_match_predictions(conn, match_id)
         ctx["result"] = database.get_match_result(conn, match_id)
         if ctx["result"]:
+            sport_type = ctx["match"]["sport_type"]
             for prediction in ctx["predictions"]:
-                sport_type = ctx["match"]["sport_type"]
                 prediction["evaluation"] = rules.evaluate_prediction(prediction, ctx["result"], sport_type)
+            if ctx.get("python_prediction"):
+                ctx["python_prediction"]["evaluation"] = rules.evaluate_prediction(ctx["python_prediction"], ctx["result"], sport_type)
         ctx["settings"] = {
             "data_source": data_source.source_name(),
             "gemini_enabled": database.is_gemini_enabled(conn),
@@ -370,12 +373,57 @@ def api_analyze_single_match(match_id: int):
         try:
             prediction = gemini_engine.generate_prediction(ctx, model_name=config.GEMINI_MODEL)
             database.save_prediction(conn, match_id, prediction)
+            try:
+                python_engine.generate_python_prediction(conn, match_id)
+            except Exception:
+                pass
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
     return jsonify({
         "success": True,
         "prediction": prediction
     })
+
+@app.route("/api/matches/<int:match_id>/python_analyze", methods=["POST"])
+def api_python_analyze_match(match_id: int):
+    """Belirtilen maç için yerel Python İstatistiksel/ML (Poisson xG) tahminini hesaplar."""
+    with database.db_session() as conn:
+        ctx, missing = match_data.load_context_for_analysis(conn, match_id)
+        if not ctx:
+            return _match_not_found()
+        if missing:
+            return jsonify({
+                "success": False,
+                "code": "MISSING_STATS",
+                "missing": missing,
+                "error": match_data.missing_stats_message(missing)
+            }), 409
+
+        match = ctx["match"]
+        data = request.get_json(silent=True) or {}
+        if config.REQUIRE_LEAGUE_APPROVAL and match["league_id"] and not match["league_gemini_analysis"]:
+            if not data.get("enable_league"):
+                return jsonify({
+                    "success": False,
+                    "code": "LEAGUE_DISABLED",
+                    "league_id": match["league_id"],
+                    "league_name": match["league_name"],
+                    "error": f"'{match['league_name']}' ligi için analiz izni kapalı."
+                }), 409
+            database.set_league_gemini_analysis(conn, match["league_id"], True)
+            conn.commit()
+
+        pred = python_engine.generate_python_prediction(conn, match_id, check_eligibility=False)
+        if not pred:
+            return jsonify({"success": False, "error": "Python tahmini üretilemedi."}), 500
+        return jsonify({"success": True, "prediction": pred})
+
+@app.route("/api/python_engine/sync", methods=["POST"])
+def api_python_engine_sync():
+    """Gemini analizi olan ancak henüz Python tahmini olmayan maçlar için topluca Python tahmini üretir."""
+    with database.db_session() as conn:
+        count = python_engine.sync_python_predictions_for_gemini_matches(conn)
+    return jsonify({"success": True, "synced_count": count})
 
 @app.route("/api/admin/leagues")
 def api_admin_leagues():
@@ -465,6 +513,10 @@ def api_analyze_league_matches(league_id: int):
             try:
                 pred = gemini_engine.generate_prediction(ctx, model_name=config.GEMINI_MODEL)
                 database.save_prediction(conn, match_id, pred)
+                try:
+                    python_engine.generate_python_prediction(conn, match_id)
+                except Exception:
+                    pass
                 # Uzun süren toplu analizde her tahmini anında kalıcı hale getir
                 conn.commit()
                 analyzed_results.append({
@@ -490,43 +542,13 @@ def api_analyze_league_matches(league_id: int):
 
 @app.route("/api/leagues/accuracy")
 def api_get_leagues_accuracy():
-    """Liglere göre Tercih 1 (⭐) ve 2. Tercih (alt_bet) tutma oranlarını ve özet metrikleri döner."""
+    """Liglere göre Tercih 1 (⭐) ve 2. Tercih (alt_bet) tutma oranlarını ve özet metrikleri döner. model=gemini veya model=python destekler."""
+    model = request.args.get("model", default="gemini")
     with database.db_session() as conn:
-        leagues = database.get_leagues_admin(conn)
-        accuracy_overall = database.calculate_prediction_accuracy(conn)
-
-    # Değerlendirilen maç sayısı > 0 olan ligler
-    evaluated_leagues = [l for l in leagues if l.get("evaluated", 0) > 0]
-    evaluated_leagues.sort(
-        key=lambda x: (
-            x["best_bet_accuracy"] if x["best_bet_accuracy"] is not None else -1,
-            x.get("best_bet_total", 0)
-        ),
-        reverse=True
-    )
-
-    top_league = evaluated_leagues[0] if evaluated_leagues else None
-
+        report = database.get_leagues_accuracy_report(conn, model=model)
     return jsonify({
         "success": True,
-        "summary": {
-            "total_evaluated_matches": accuracy_overall["total_evaluated"],
-            "best_bet_correct": accuracy_overall["best_bet_correct"],
-            "best_bet_total": accuracy_overall["best_bet_total"],
-            "best_bet_accuracy": accuracy_overall["best_bet_accuracy"],
-            "alt_bet_correct": accuracy_overall["alt_bet_correct"],
-            "alt_bet_total": accuracy_overall["alt_bet_total"],
-            "alt_bet_accuracy": accuracy_overall["alt_bet_accuracy"],
-            "evaluated_leagues_count": len(evaluated_leagues),
-            "total_leagues_count": len(leagues),
-            "top_league": {
-                "name": top_league["name"],
-                "accuracy": top_league["best_bet_accuracy"],
-                "total": top_league["best_bet_total"],
-                "correct": top_league["best_bet_correct"]
-            } if top_league else None
-        },
-        "leagues": leagues
+        **report
     })
 
 @app.route("/api/stats")

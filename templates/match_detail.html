@@ -97,7 +97,8 @@
                         ${highlight('Durum', statusBadge({ ...m, predicted_score: latest && latest.predicted_score }))}
                         ${highlight('Lig Gemini İzni', m.league_gemini_analysis ? '<span class="badge badge-success">Açık</span>' : '<span class="badge">Kapalı</span>')}
                         ${ctx.result ? highlight('Skor (MS / İY)', `<span class="score">${ctx.result.ft_home_score} - ${ctx.result.ft_away_score}</span> <span class="cell-sub" style="margin-left:4px; font-weight:600;">(İY ${ctx.result.ht_home_score ?? '—'} - ${ctx.result.ht_away_score ?? '—'})</span>`) : ''}
-                        ${latest ? highlight('Tahmin (MS / İY)', `<strong>${esc(latest.predicted_ft_result || '—')}</strong> · ${esc(latest.predicted_score || '—')} <span class="cell-sub" style="margin-left:4px; font-weight:600;">(İY: ${esc(latest.predicted_ht_result || '—')})</span>`) : ''}
+                        ${latest ? highlight('Gemini Tahmini', `<strong>${esc(latest.predicted_ft_result || '—')}</strong> · ${esc(latest.predicted_score || '—')} <span class="cell-sub" style="margin-left:4px; font-weight:600;">(İY: ${esc(latest.predicted_ht_result || '—')})</span>`) : ''}
+                        ${ctx.python_prediction ? highlight('Python Modeli', `<strong>${esc(ctx.python_prediction.predicted_ft_result || '—')}</strong> · ${esc(ctx.python_prediction.predicted_score || '—')} <span class="cell-sub" style="margin-left:4px; font-weight:600;">(İY: ${esc(ctx.python_prediction.predicted_ht_result || '—')})</span>`) : ''}
                     </div>
                 </div>
 
@@ -115,7 +116,9 @@
                         </div>
                     </section>
                     <aside>
+                        ${renderConsensusBadge(latest, ctx.python_prediction)}
                         ${renderPredictionCard(latest)}
+                        ${renderPythonPredictionCard(ctx.python_prediction)}
                         ${renderResultCard()}
                         ${renderHistoryCard()}
                     </aside>
@@ -359,6 +362,101 @@
                 <div class="value">${esc(total ?? '—')}</div>${sub}</div>`;
         }
 
+        function renderConsensusBadge(gemini, python) {
+            const geminiBest = gemini && gemini.best_bet && gemini.best_bet.selection;
+            const pythonBest = python && python.best_bet && python.best_bet.selection;
+            if (!geminiBest || !pythonBest) return '';
+
+            const agree = (geminiBest === pythonBest);
+            if (agree) {
+                return `<div style="background:#ecfdf5; border:1px solid #a7f3d0; color:#065f46; padding:10px 14px; border-radius:8px; margin-bottom:12px; display:flex; align-items:center; gap:10px; font-size:13px; font-weight:600;">
+                    <span style="font-size:20px;">🤝</span>
+                    <div>
+                        <div>İki Model Mutabık: <strong>⭐ ${esc(geminiBest)}</strong></div>
+                        <div class="cell-sub" style="color:#047857; margin-top:2px;">Gemini ve Python modeli aynı önerilen 1. Tercihte (⭐ ${esc(geminiBest)}) mutabık kaldı.</div>
+                    </div>
+                </div>`;
+            } else {
+                return `<div style="background:#fffbeb; border:1px solid #fde68a; color:#92400e; padding:10px 14px; border-radius:8px; margin-bottom:12px; display:flex; align-items:center; gap:10px; font-size:13px; font-weight:600;">
+                    <span style="font-size:20px;">⚖️</span>
+                    <div>
+                        <div>Önerilen Tercih Farklılığı</div>
+                        <div class="cell-sub" style="color:#b45309; margin-top:2px;">Gemini 1. Tercih: <strong>⭐ ${esc(geminiBest)}</strong> vs Python 1. Tercih: <strong>⭐ ${esc(pythonBest)}</strong></div>
+                    </div>
+                </div>`;
+            }
+        }
+
+        function renderPythonPredictionCard(py) {
+            if (!py) {
+                return `<div class="card" style="border-top: 3px solid #0284c7;">
+                    <div class="card-header">
+                        <div class="card-title" style="color:#0284c7;">⚡ Python Hibrit ML Modeli (Random Forest + Poisson)</div>
+                    </div>
+                    <div class="card-body">
+                        <p class="muted">Bu maç için yerel Python ML tahmini henüz hesaplanmadı.</p>
+                        <button class="btn btn-sm btn-brand" type="button" data-action="python-analyze" style="margin-top:8px;">⚡ Python ile Hesapla</button>
+                    </div>
+                </div>`;
+            }
+            const ev = py.evaluation || {};
+            const r = ctx.result;
+            const actualHtText = r && r.ht_home_score !== null ? `Gerçek İY: ${r.ht_home_score}-${r.ht_away_score}` : null;
+            const actualFtText = r && r.ft_home_score !== null ? `Gerçek MS: ${r.ft_home_score}-${r.ft_away_score}` : null;
+            const actualScoreText = r && r.ft_home_score !== null ? `Gerçek: ${r.ft_home_score}-${r.ft_away_score}` : null;
+
+            const isBsk = isBasketball(ctx.match.sport_type);
+            const xgSub = !isBsk && py.expected_home_goals !== null
+                ? `<div style="font-size:12px; font-weight:700; color:#0369a1; background:#f0f9ff; padding:6px 10px; border-radius:6px; margin-bottom:8px; border:1px solid #bae6fd;">
+                     ⚽ Beklenen Gol: Ev ${Math.round(py.expected_home_goals)} - Dep ${Math.round(py.expected_away_goals)}
+                   </div>`
+                : '';
+
+            const probsSub = !isBsk && py.home_win_prob !== null
+                ? `<div style="display:flex; justify-content:space-between; font-size:11px; margin-top:8px; background:#f8fafc; padding:6px 10px; border-radius:6px; color:#334155; font-weight:700; border:1px solid #e2e8f0;">
+                     <span>MS 1: %${Math.round(py.home_win_prob * 100)}</span>
+                     <span>MS 0: %${Math.round(py.draw_prob * 100)}</span>
+                     <span>MS 2: %${Math.round(py.away_win_prob * 100)}</span>
+                     <span>3 ÜST: %${Math.round((py.over_3_prob || 0) * 100)}</span>
+                     <span>KG: %${Math.round((py.kg_prob || 0) * 100)}</span>
+                   </div>`
+                : '';
+
+            const predictedByMarket = { ft: py.predicted_ft_result, ht: py.predicted_ht_result, over_under: py.predicted_over_under_3, kg: py.predicted_kg };
+            const bestMarket = py.best_bet && predictedByMarket[py.best_bet.market] === py.best_bet.selection ? py.best_bet.market : null;
+
+            const sportCells = isBsk
+                ? `<div class="prediction-cell" style="grid-column: 1 / -1;"><div class="label">Beklenen Sayı</div>
+                   <div class="value">${esc(py.predicted_score)}</div></div>`
+                : `${predictionCell('3 Gol Alt / Üst', py.predicted_over_under_3, ev.over_under, bestMarket === 'over_under')}
+                   ${predictionCell('Karşılıklı Gol', py.predicted_kg, ev.kg, bestMarket === 'kg')}`;
+
+            const modelLabel = py.model_type === 'hybrid_rf_poisson' ? '🌲 Random Forest + ⚽ Poisson xG' : (py.model_type || 'poisson_xg');
+
+            return `<div class="card" style="border-top: 3px solid #0284c7;">
+                <div class="card-header">
+                    <div class="card-title" style="color:#0284c7;">⚡ Python Hibrit ML Modeli</div>
+                    <div style="display:flex; align-items:center; gap:6px;">
+                        ${confidenceBadge(py.confidence_score)}
+                        <button class="btn btn-sm" type="button" data-action="python-analyze" title="Yeniden Hesapla" style="padding:2px 6px; font-size:11px;">🔄</button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    ${xgSub}
+                    <div class="prediction-grid">
+                        ${predictionCell('Maç Sonu', py.predicted_ft_result, ev.ft, bestMarket === 'ft', actualFtText)}
+                        ${predictionCell('İlk Yarı', `${py.predicted_ht_result || '—'}${py.predicted_ht_score ? ` · ${py.predicted_ht_score}` : ''}`, ev.ht, bestMarket === 'ht', actualHtText)}
+                        ${sportCells}
+                        ${predictionCell('Tahmini Skor', py.predicted_score, ev.score, false, actualScoreText)}
+                        ${predictionCell('Güven', py.confidence_score !== null ? `%${py.confidence_score}` : null)}
+                    </div>
+                    ${probsSub}
+                    ${renderBestBet(py)}
+                    <div class="cell-sub" style="margin-top:8px;">Model: <strong>${esc(modelLabel)}</strong> · Veri Seti: DB Bitmiş Maçlar</div>
+                </div>
+            </div>`;
+        }
+
         function renderPredictionCard(p) {
             if (!p) {
                 return `<div class="card">
@@ -504,6 +602,8 @@
         const ACTIONS = {
             predict: btn => runAction(btn, 'Gemini analiz ediyor', () => requestPrediction(MATCH_ID),
                 res => `Tahmin tamamlandı. Beklenen skor: ${res.prediction.predicted_score}`),
+            'python-analyze': btn => runAction(btn, 'Hesaplanıyor', () => postJson(`/api/matches/${MATCH_ID}/python_analyze`),
+                res => `Python Poisson tahmini hesaplandı: ${res.prediction.predicted_score} (${res.prediction.predicted_ft_result})`),
             stats: btn => runAction(btn, `${ctx.settings.data_source} sorgulanıyor`, () => postJson(`/api/matches/${MATCH_ID}/sync_stats`),
                 `${ctx.settings.data_source} istatistikleri güncellendi.`, { switchToStats: true }),
             score: () => openScoreModal()

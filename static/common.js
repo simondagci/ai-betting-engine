@@ -183,6 +183,7 @@ function pickMainOdds(odds = [], sportType = 'FOOTBALL') {
 
 // Tahmin özetinin ikinci satırı: futbol 'İY 1 (1-0) · ALT · KG YOK', basketbol 'İY 1 (42-38) · Toplam 217'
 function predictionSubline(p, sportType) {
+    if (!p) return '';
     const htText = p.predicted_ht_score
         ? `${p.predicted_ht_result || '—'} (${p.predicted_ht_score})`
         : (p.predicted_ht_result || '—');
