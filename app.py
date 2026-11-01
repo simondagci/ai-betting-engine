@@ -241,6 +241,8 @@ def display_prediction_card(match_info: Dict[str, Any], pred: Dict[str, Any], od
     print(f"🏆 Maç Sonu Tahmini     : {Colors.BOLD}{pred.get('predicted_ft_result')}{Colors.ENDC}")
     if basketball:
         print(f"🏀 Maç Sonu Toplam Sayı : {Colors.BOLD}{pred.get('predicted_total_points')}{Colors.ENDC}")
+        if pred.get('predicted_over_under_3'):
+            print(f"📊 Alt / Üst Tahmini    : {Colors.BOLD}{pred.get('predicted_over_under_3')}{Colors.ENDC}")
     else:
         print(f"⚽ 3 Gol Sınırı (Alt/Üst): {Colors.BOLD}{pred.get('predicted_over_under_3')}{Colors.ENDC} {Colors.DIM}(>=4 gol: ÜST, <=3 gol: ALT){Colors.ENDC}")
         print(f"🤝 Karşılıklı Gol       : {Colors.BOLD}{pred.get('predicted_kg')}{Colors.ENDC}")

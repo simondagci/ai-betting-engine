@@ -42,6 +42,11 @@ WALK_FORWARD_WARMUP_RATIO = 5
 WALK_FORWARD_BLOCKS = 10
 WALK_FORWARD_MIN_BLOCK = 10
 
+# Basketbol Alt/Üst: beklenen toplam = piyasa sınırı ile takım ortalamasının karışımı (piyasa daha iyi tahmin edicidir);
+# sonuç - sınır standart sapması DB'de ~18 sayı
+BASKETBALL_LINE_WEIGHT = 0.70
+BASKETBALL_TOTAL_SIGMA = 18.0
+
 _FOOTBALL_COMPLETED_WHERE = "m.sport_type = 'FOOTBALL' AND r.ft_home_score IS NOT NULL AND r.ft_away_score IS NOT NULL"
 
 # Eğitilmiş üretim modeli önbelleği (Hafıza içi hızlı tahmin için)
@@ -152,7 +157,7 @@ def _load_contexts(conn, where: str, params: Sequence[Any] = ()) -> List[Dict[st
     where: 'm', 'ht', 'at', 'l', 'ms', 'r' takma adlarını kullanabilir.
     """
     rows = conn.execute(f"""
-        SELECT m.id, m.home_team_id, m.away_team_id, m.league_id, m.sport_type,
+        SELECT m.id, m.home_team_id, m.away_team_id, m.league_id, m.sport_type, m.total_points_line,
                ht.name AS home_name, at.name AS away_name,
                {database._CHRONOLOGICAL_DATE} AS chrono_date, m.match_time,
                ms.home_last_matches_json, ms.away_last_matches_json,
@@ -469,7 +474,12 @@ def determine_python_best_and_alt_bet(pred_data: Dict[str, Any], odds: List[Dict
 
     scored_candidates = []
     for c in all_candidates:
-        prob = prob_map.get((c["market"], c["selection"]))
+        if c["market"] == "total_points":
+            # Basketbol Alt/Üst: P(ÜST) modelden, seçimin yönü ('162.5 ÜST') seçim metninden gelir
+            p_over = pred_data.get("over_3_prob")
+            prob = None if p_over is None else (p_over if rules.total_points_direction(c["selection"]) == "ÜST" else 1.0 - p_over)
+        else:
+            prob = prob_map.get((c["market"], c["selection"]))
         if prob is None:
             continue
         conf = _confidence(prob)
@@ -489,7 +499,13 @@ def determine_python_best_and_alt_bet(pred_data: Dict[str, Any], odds: List[Dict
 
     exp_h = int(round(pred_data.get('expected_home_goals', 0)))
     exp_a = int(round(pred_data.get('expected_away_goals', 0)))
-    goal_text = f"Beklenen Sayı: {exp_h} - {exp_a}" if rules.is_basketball(sport_type) else f"Beklenen Gol: {exp_h} - {exp_a}"
+    if top_best["market"] == "total_points":
+        goal_text = f"Beklenen Toplam: {exp_h + exp_a}"
+    elif rules.is_basketball(sport_type):
+        goal_text = f"Beklenen Sayı: {exp_h} - {exp_a}"
+    else:
+        goal_text = f"Beklenen Gol: {exp_h} - {exp_a}"
+
     best_bet = {
         "market": top_best["market"],
         "selection": top_best["selection"],
@@ -514,15 +530,32 @@ def determine_python_best_and_alt_bet(pred_data: Dict[str, Any], odds: List[Dict
     return best_bet, alt_bet
 
 def calculate_basketball_probabilities(ctx: Dict[str, Any], index: _ResultsIndex) -> Dict[str, Any]:
-    """Basketbol için (maçtan önceki) sayı ortalamaları üzerinden beklenen skor ve galip tahmini."""
+    """Basketbol için (maçtan önceki) sayı ortalamaları ve total_points_line üzerinden beklenen skor ve galip/Alt-Üst tahmini."""
     h_scored, _, _ = index.averages(ctx["home_team_id"], True, ctx["league_id"], ctx["sort_key"])
     a_scored, _, _ = index.averages(ctx["away_team_id"], False, ctx["league_id"], ctx["sort_key"])
 
     h_pts = h_scored if h_scored > 50 else 82.0
     a_pts = a_scored if a_scored > 50 else 78.0
+    team_exp_total = (h_pts + 3.0) + a_pts
 
-    exp_home = int(round(h_pts + 3.0))
-    exp_away = int(round(a_pts))
+    line = ctx.get("total_points_line")
+    prob_over = None
+    predicted_ou = None
+
+    if line is not None:
+        # Ağırlıklı karışım: piyasa sınırı takım ortalamasından daha iyi bir tahmin edicidir
+        expected_total = BASKETBALL_LINE_WEIGHT * line + (1.0 - BASKETBALL_LINE_WEIGHT) * team_exp_total
+        ratio = (h_pts + 3.0) / team_exp_total if team_exp_total else 0.51
+        exp_home = int(round(expected_total * ratio))
+        exp_away = int(round(expected_total * (1.0 - ratio)))
+
+        # P(ÜST) normal dağılım CDF ile (erf kullanılarak)
+        z = (expected_total - line) / BASKETBALL_TOTAL_SIGMA
+        prob_over = max(0.05, min(0.95, round(0.5 * (1.0 + math.erf(z / math.sqrt(2.0))), 3)))
+        predicted_ou = "ÜST" if prob_over >= 0.50 else "ALT"
+    else:
+        exp_home = int(round(h_pts + 3.0))
+        exp_away = int(round(a_pts))
 
     exp_ht_home = int(round(exp_home * 0.49))
     exp_ht_away = int(round(exp_away * 0.49))
@@ -538,14 +571,15 @@ def calculate_basketball_probabilities(ctx: Dict[str, Any], index: _ResultsIndex
         "home_win_prob": round(prob_home, 3),
         "draw_prob": 0.0,
         "away_win_prob": round(1.0 - prob_home, 3),
-        "over_3_prob": None,
+        "over_3_prob": prob_over,
         "kg_prob": None,
         "predicted_ft_result": "MS 1" if exp_home >= exp_away else "MS 2",
         "predicted_score": f"{exp_home}-{exp_away}",
         "predicted_ht_result": "İY 1" if exp_ht_home > exp_ht_away else ("İY 2" if exp_ht_away > exp_ht_home else "İY 0"),
         "predicted_ht_score": f"{exp_ht_home}-{exp_ht_away}",
-        "predicted_over_under_3": None,
+        "predicted_over_under_3": predicted_ou,
         "predicted_kg": None,
+        "total_points_line": line,
         "confidence_score": int(max(prob_home, 1.0 - prob_home) * 100)
     }
 
@@ -650,20 +684,42 @@ def recalculate_completed_matches_walk_forward(conn) -> int:
                                       odds_by_match.get(contexts[i]["id"], []))
     return len(contexts)
 
+def recalculate_completed_basketball_matches(conn) -> int:
+    """Tamamlanmış basketbol maçları için Python tahminlerini (Alt/Üst dahil) günceller."""
+    contexts = _load_contexts(conn, """m.sport_type = 'BASKETBALL' AND m.match_completed = 1
+        AND ms.home_last_matches_json IS NOT NULL AND ms.away_last_matches_json IS NOT NULL AND ms.h2h_json IS NOT NULL
+        AND (l.gemini_analysis = 1 OR l.id IS NULL)""")
+    if not contexts:
+        return 0
+    index = _load_results_index(conn)
+    odds_by_match = database._get_odds_by_match(conn, [c["id"] for c in contexts])
+    count = 0
+    for ctx in contexts:
+        pred_data = calculate_basketball_probabilities(ctx, index)
+        m_odds = odds_by_match.get(ctx["id"], [])
+        pred_data["best_bet"], pred_data["alt_bet"] = determine_python_best_and_alt_bet(pred_data, m_odds, sport_type=rules.BASKETBALL)
+        database.save_python_prediction(conn, ctx["id"], pred_data)
+        count += 1
+    return count
+
 def sync_python_predictions_for_gemini_matches(conn) -> int:
     """
     Tüm maçlar için yerel Python tahminlerini senkronize eder:
     - Bitmiş maçları sıfır sızıntılı Walk-Forward ile dürüstçe hesaplar.
+    - Bitmiş basketbol maçlarını Alt/Üst dahil günceller.
     - Bitmemiş maçları üretim modeliyle tahmin eder.
     """
     # 1. Önce bitmiş maçları walk-forward ile dürüstçe hesapla
     oof_count = recalculate_completed_matches_walk_forward(conn)
 
-    # 2. Bitmemiş maçları üretim modeliyle hesapla
+    # 2. Bitmiş basketbol maçlarını hesapla
+    bsk_count = recalculate_completed_basketball_matches(conn)
+
+    # 3. Kalan bitmemiş maçları hesapla
     unfinished = database.get_matches_for_python_sync(conn)
     unf_count = 0
     for m in unfinished:
         generate_python_prediction(conn, m["id"])
         unf_count += 1
 
-    return oof_count + unf_count
+    return oof_count + bsk_count + unf_count

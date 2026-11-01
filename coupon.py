@@ -79,7 +79,7 @@ def build_calibration(history: List[Dict[str, Any]], k: float = SHRINKAGE_K) -> 
         sport = h.get("sport_type") or rules.FOOTBALL
         won = int(bool(h.get("won")))
         group = groups.setdefault((h["source"], sport, band), {"wins": 0, "count": 0, "conf_sum": 0.0, "conf_count": 0})
-        detail = details.setdefault((h["source"], sport, h["market"], h["selection"], band), {"wins": 0, "count": 0})
+        detail = details.setdefault((h["source"], sport, h["market"], rules.calibration_selection(h["market"], h["selection"]), band), {"wins": 0, "count": 0})
         group["wins"] += won
         group["count"] += 1
         detail["wins"] += won
@@ -103,9 +103,10 @@ def calibrated_probability(calibration: Optional[Dict[str, Any]], source: str, s
     """
     Tercihin kalibre tutma olasılığı (%) ve dayandığı örnek sayısı. Önce ayrıntılı (market + seçim), yoksa grup
     (kaynak + oran bandı) tahmini; geçmiş yoksa modelin kendi güven yüzdesi (örnek sayısı 0).
+    total_points için seçim sınırsız yönle ('ALT'/'ÜST') normalize edilir (rules.calibration_selection).
     """
     band = get_odds_band(odds)
-    for level, key in (("level_1", (source, sport, market, selection, band)), ("level_2", (source, sport, band))):
+    for level, key in (("level_1", (source, sport, market, rules.calibration_selection(market, selection), band)), ("level_2", (source, sport, band))):
         entry = (calibration or {}).get(level, {}).get(key)
         if entry:
             return round(entry["prob"] * 100.0, 1), entry["count"]

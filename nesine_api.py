@@ -2,6 +2,7 @@ import requests
 import json
 from typing import Dict, Any, List, Optional, Tuple
 import config
+import rules
 
 DEFAULT_HEADERS = {
     "Accept": "application/json, text/plain, */*",
@@ -94,7 +95,7 @@ def _classify_market(market: Dict[str, Any]) -> Optional[MarketSpec]:
 BASKETBALL_MATCH_RESULT_MST = 2
 BASKETBALL_FIRST_HALF_RESULT_MST = 621
 BASKETBALL_TOTAL_POINTS_MST = 114
-BASKETBALL_TOTAL_POINTS_MARKET = "Toplam Sayı Alt/Üst"
+BASKETBALL_TOTAL_POINTS_MARKET = rules.TOTAL_POINTS_MARKET
 
 def _format_line(value: Any) -> str:
     """Barem değerini metne çevirir: 237.5 -> '237.5', 3.0 -> '3'."""

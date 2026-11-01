@@ -18,7 +18,7 @@ DB_FILE = config.DB_FILE_PATH
 _MATCH_COLUMNS = """
     m.id, m.code, ht.name as home_team, at.name as away_team,
     l.name as league_name, l.id as league_id, l.gemini_analysis as league_gemini_analysis,
-    m.match_date, m.match_time, m.sport_type, m.status, m.match_completed
+    m.match_date, m.match_time, m.sport_type, m.status, m.match_completed, m.total_points_line
 """
 
 _MATCH_JOINS = """
@@ -227,6 +227,7 @@ def init_db(db_path: str = DB_FILE) -> None:
         );
         """)
         _ensure_column(cursor, "matches", "match_completed", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(cursor, "matches", "total_points_line", "REAL")  # basketbol Alt/Üst sınırı (bülten baremi)
 
         # Oranlar Tablosu
         cursor.execute("""
@@ -380,6 +381,28 @@ def init_db(db_path: str = DB_FILE) -> None:
                             ("alt_bet_market", "TEXT"), ("alt_bet_selection", "TEXT"),
                             ("alt_bet_confidence", "INTEGER"), ("alt_bet_odds", "REAL")):
             _ensure_column(cursor, "python_predictions", column, ddl)
+
+
+        # Geriye dönük doldurma (idempotent): basketbol maçlarının Alt/Üst sınırı oranlardan, eski Gemini tahminlerinin ALT/ÜST'ü
+        # tahmini toplam sayı ve sınırdan türetilir
+        cursor.execute("""
+            UPDATE matches
+            SET total_points_line = (
+                SELECT CAST(substr(option_name, 1, instr(option_name, ' ') - 1) AS REAL)
+                FROM odds WHERE odds.match_id = matches.id AND odds.market_name = ? LIMIT 1
+            )
+            WHERE sport_type = 'BASKETBALL' AND total_points_line IS NULL
+              AND EXISTS (SELECT 1 FROM odds WHERE odds.match_id = matches.id AND odds.market_name = ?)
+        """, (rules.TOTAL_POINTS_MARKET, rules.TOTAL_POINTS_MARKET))
+        cursor.execute("""
+            UPDATE predictions
+            SET predicted_over_under_3 = CASE
+                WHEN predicted_total_points > (SELECT total_points_line FROM matches WHERE matches.id = predictions.match_id)
+                THEN 'ÜST' ELSE 'ALT' END
+            WHERE predicted_over_under_3 IS NULL AND predicted_total_points IS NOT NULL
+              AND match_id IN (SELECT id FROM matches WHERE sport_type = 'BASKETBALL' AND total_points_line IS NOT NULL)
+        """)
+
         conn.commit()
 
         # Tarihi geçmiş maçları topluca güncelle
@@ -529,7 +552,7 @@ def get_league_prediction_stats(conn: sqlite3.Connection) -> Dict[int, Dict[str,
                  "alt_bet_total", "alt_bet_correct", "alt_bet_accuracy", "ft_correct", "ft_accuracy"}}
     """
     rows = conn.execute(f"""
-        SELECT m.league_id, m.sport_type, {_PREDICTION_COLUMNS},
+        SELECT m.league_id, m.sport_type, m.total_points_line, {_PREDICTION_COLUMNS},
                r.ht_home_score, r.ht_away_score, r.ft_home_score, r.ft_away_score
         FROM matches m
         JOIN results r ON r.match_id = m.id
@@ -606,7 +629,7 @@ def get_league_python_prediction_stats(conn: sqlite3.Connection) -> Dict[int, Di
                  "alt_bet_total", "alt_bet_correct", "alt_bet_accuracy", "ft_correct", "ft_accuracy"}}
     """
     rows = conn.execute(f"""
-        SELECT m.league_id, m.sport_type, {_PYTHON_PREDICTION_COLUMNS},
+        SELECT m.league_id, m.sport_type, m.total_points_line, {_PYTHON_PREDICTION_COLUMNS},
                r.ht_home_score, r.ht_away_score, r.ft_home_score, r.ft_away_score
         FROM matches m
         JOIN results r ON r.match_id = m.id
@@ -637,6 +660,7 @@ def calculate_python_prediction_accuracy(conn: sqlite3.Connection) -> Dict[str, 
     rows = conn.execute(f"""
         SELECT
             m.sport_type,
+            m.total_points_line,
             {_PYTHON_PREDICTION_COLUMNS},
             r.ht_home_score, r.ht_away_score, r.ft_home_score, r.ft_away_score, r.is_over_3_goals, r.is_kg_var
         FROM python_predictions pp
@@ -844,8 +868,8 @@ def is_league_analysis_enabled(conn: sqlite3.Connection, league_id: int) -> bool
 # ==============================================================================
 
 _INSERT_MATCH_SQL = """
-    INSERT INTO matches (code, home_team_id, away_team_id, league_id, match_date, match_time, sport_type, status, match_completed)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO matches (code, home_team_id, away_team_id, league_id, match_date, match_time, sport_type, status, match_completed, total_points_line)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _INSERT_ODDS_SQL = """
@@ -865,7 +889,7 @@ def match_exists(conn: sqlite3.Connection, code: str) -> bool:
 
 def save_match(conn: sqlite3.Connection, code: str, home_team: str, away_team: str,
                league_name: str, match_date: str, match_time: str, sport_type: str = "FOOTBALL",
-               default_league_gemini_analysis: int = 0) -> int:
+               default_league_gemini_analysis: int = 0, total_points_line: Optional[float] = None) -> int:
     """Tekil maç kaydı yapar (Var ise doğrudan id döner)."""
     cursor = conn.cursor()
     cursor.execute("SELECT id FROM matches WHERE code = ?", (code,))
@@ -878,7 +902,7 @@ def save_match(conn: sqlite3.Connection, code: str, home_team: str, away_team: s
     league_id = get_or_create_league(conn, league_name, sport_type, default_league_gemini_analysis) if league_name else None
     status, match_completed = _completion_state(match_date, match_time)
 
-    cursor.execute(_INSERT_MATCH_SQL, (code, home_id, away_id, league_id, match_date, match_time, sport_type, status, match_completed))
+    cursor.execute(_INSERT_MATCH_SQL, (code, home_id, away_id, league_id, match_date, match_time, sport_type, status, match_completed, total_points_line))
     return cursor.lastrowid
 
 def save_odds(conn: sqlite3.Connection, match_id: int, odds_list: List[Dict[str, Any]]) -> None:
@@ -984,14 +1008,16 @@ def sync_bulletin_matches_and_odds(
     leagues_by_external_id = _external_id_map(cursor)
 
     # 6. Yeni maçları hazırla ve topluca (executemany) ekle
+    odds_by_code = {item["code"]: nesine_api.extract_odds_from_event(item["raw_event"]) for item in new_events}
     new_matches_params = []
     for item in new_events:
         status, match_completed = _completion_state(item["match_date"], item["match_time"])
+        line = rules.main_total_points_line(odds_by_code[item["code"]]) if rules.is_basketball(item["sport_type"]) else None
         new_matches_params.append((
             item["code"], teams_cache[item["home_team"]], teams_cache[item["away_team"]],
             resolve_league(item),
             item["match_date"], item["match_time"],
-            item["sport_type"], status, match_completed
+            item["sport_type"], status, match_completed, line
         ))
 
     matches_cache: Dict[str, int] = {}
@@ -1005,7 +1031,7 @@ def sync_bulletin_matches_and_odds(
     for item in new_events:
         match_id = matches_cache.get(item["code"])
         if match_id:
-            all_odds_params.extend(_odds_params(match_id, nesine_api.extract_odds_from_event(item["raw_event"])))
+            all_odds_params.extend(_odds_params(match_id, odds_by_code[item["code"]]))
 
     if all_odds_params:
         cursor.executemany(_INSERT_ODDS_SQL, all_odds_params)
@@ -1508,7 +1534,7 @@ def calculate_prediction_accuracy(conn: sqlite3.Connection) -> Dict[str, Any]:
     """
     rows = conn.execute("""
         SELECT
-            m.sport_type,
+            m.sport_type, m.total_points_line,
             p.predicted_ht_result, p.predicted_ft_result, p.predicted_over_under_3, p.predicted_kg, p.predicted_score,
             p.predicted_total_points, p.best_bet_market, p.best_bet_selection, p.alt_bet_market, p.alt_bet_selection,
             r.ht_home_score, r.ht_away_score, r.ft_home_score, r.ft_away_score, r.is_over_3_goals, r.is_kg_var

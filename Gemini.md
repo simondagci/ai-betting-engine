@@ -75,10 +75,11 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
   `rules.OVER_UNDER_GOAL_LIMIT`, `MatchPrediction.predicted_over_under_3`. Sonuç/gol hesabını başka yerde yeniden yazma, `rules.py`'yi kullan.
 - **KG VAR:** her iki takım da ≥1 gol.
 - **Basketbol farklıdır:**
-  - KG ve Alt/Üst yok; MS beraberliksiz (uzatmalar dahil: MS 1 / MS 2); İY 1 / İY 0 / İY 2.
-  - Gemini **Maç Sonu Toplam Sayı** (`predicted_total_points`) tahmin eder; tahmini skordaki iki sayının toplamına eşitlenir.
+  - KG yoktur; MS beraberliksiz (uzatmalar dahil: MS 1 / MS 2); İY 1 / İY 0 / İY 2.
+  - Maç kaydında `matches.total_points_line` (iddaa "Toplam Sayı Alt/Üst" baremi) tutulur; Gemini ve Python bu sınıra göre `predicted_over_under_3` ("ALT"/"ÜST") ve maç sonu toplam sayı (`predicted_total_points`) tahmin eder.
+  - `total_points` marketi (örn. "162.5 ÜST") ⭐ / 2. tercih / kupon adayı olabilir.
   - Skor girişinde üst sınır yok (futbolda 0–99). Basketbol sonuçlarına 3 gol / KG yazılmaz (NULL).
-  - Spora göre dallanma `rules.is_basketball(sport_type)` ile; `evaluate_prediction` `sport_type` parametresi alır.
+  - Spora göre dallanma `rules.is_basketball(sport_type)` ile; `evaluate_prediction` spora göre Alt/Üst değerlendirmesini futbol için 3.5 gol, basketbol için `total_points_line` üzerinden yapar.
   - Basketbol oranları `nesine_api._classify_basketball_market` ile etiketlenir (futbol sınıflandırıcısı yanlış etiketler).
 - **Spor ayrımı:** bülten `TYPE "1"` = futbol, `"2"` = basketbol, `"-1"` = uzun vadeli (atlanır). Skor tipi futbolda `FT`, basketbolda `Current`; ilk yarı her ikisinde `HT`.
 - **150 dakika kuralı:** başlama saatinden `MATCH_COMPLETION_DELAY_MINUTES` (150) dk sonra `match_completed = 1`, `status = 'COMPLETED'`.
@@ -88,7 +89,7 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
   - Gemini'ye istek atan her web endpoint'i `_gemini_disabled_response` ile kontrol eder (403 `GEMINI_DISABLED`).
   - Tek maç analizi: lig izni kapalıysa 409 `LEAGUE_DISABLED` (`{"enable_league": true}` ile izin açılıp analiz yapılır); istatistik eksikse 409 `MISSING_STATS`.
 - **⭐ En güçlü tercih + 2. tercih:**
-  - ⭐ `best_bet_*`: Gemini'nin kendi tahmin marketlerinden (futbol: MS, İY, 3 gol ALT/ÜST = 3.5 baremi, KG; basketbol: MS, İY)
+  - ⭐ `best_bet_*`: Gemini'nin kendi tahmin marketlerinden (futbol: MS, İY, 3 gol ALT/ÜST = 3.5 baremi, KG; basketbol: MS, İY, Toplam Sayı Alt/Üst)
     gerçekleşeceğine **en çok güvendiği** seçim. Oran sınırı yoktur (1.10'luk favori olabilir). Çifte Şans ⭐ olamaz.
   - 2. tercih `alt_bet_*`: ⭐ seçimin oranı `MIN_BEST_BET_ODDS` (1.30) **altındaysa**, oranı eşik ve üstü seçenekler (Çifte Şans dahil)
     arasından Gemini'nin en çok güvendiği seçim + olasılığı (`alt_bet_confidence`). ⭐ oranı eşik ve üstüyse 2. tercih kaydedilmez.
@@ -147,7 +148,7 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
 | :--- | :--- |
 | `teams` | `id`, `name`, `sport_type` |
 | `leagues` | `id`, `name`, `sport_type`, `gemini_analysis` (0/1), `external_id` (kaynak lig ID'si, eşleştirme anahtarı) |
-| `matches` | `id`, `code` (bülten maç kodu), `home_team_id`, `away_team_id`, `league_id`, `match_date` (`DD.MM.YYYY`), `match_time`, `sport_type`, `status`, `match_completed` (0/1) |
+| `matches` | `id`, `code` (bülten maç kodu), `home_team_id`, `away_team_id`, `league_id`, `match_date` (`DD.MM.YYYY`), `match_time`, `sport_type`, `status`, `match_completed` (0/1), `total_points_line` (iddaa "Toplam Sayı Alt/Üst" baremi, REAL, futbolda NULL) |
 | `odds` | `id`, `match_id`, `market_type`, `market_name`, `option_name`, `odds_value` |
 | `match_stats` | `id`, `match_id` (UNIQUE), `h2h_json`, `home_last_matches_json`, `away_last_matches_json`, `missing_players_json`, `league_table_json`, `updated_at` |
 | `predictions` | `id`, `match_id`, `predicted_ht_result`, `predicted_ht_score`, `predicted_ft_result`, `predicted_over_under_3`, `predicted_kg`, `predicted_score`, `confidence_score`, `ai_analysis_summary`, `predicted_total_points` (basketbol), `best_bet_market`, `best_bet_selection`, `best_bet_confidence`, `best_bet_reason`, `best_bet_odds`, `alt_bet_market`, `alt_bet_selection`, `alt_bet_confidence`, `alt_bet_odds`, `over_under_line`, `avoid_bets_json` (kullanılmıyor), `created_at` |
@@ -249,7 +250,7 @@ Toplam gol >= 4 ise "ÜST", <= 3 ise "ALT".
 `best_bet_confidence`, `best_bet_reason`, `alt_bet_selection`, `alt_bet_confidence`.
 
 **Basketbol (`BasketballPrediction`):** rol "basketbol veri analisti"; 3 gol kuralı ve KG yok; `predicted_total_points`
-istenir; MS beraberliksiz; ⭐ ve 2. tercih adayları sadece MS ve İY.
+istenir ve sınır varsa Alt/Üst türetilir; MS beraberliksiz; ⭐ ve 2. tercih adayları MS, İY ve Toplam Sayı Alt/Üst (`total_points`).
 
 ---
 
