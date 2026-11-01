@@ -191,7 +191,7 @@
                                     <th>Lig</th>
                                     <th>Önerilen Tercih</th>
                                     <th class="num">Oran</th>
-                                    <th class="num">Güven %</th>
+                                    <th class="num">Kalibre Olasılık</th>
                                     <th>Lig AI Başarısı (Ağırlık)</th>
                                     <th class="num">Kupon Puanı</th>
                                     <th>Detay</th>
@@ -1610,8 +1610,12 @@
 
             document.getElementById('couponTotalOdds').textContent = `Toplam Oran: ${Number(res.total_odds).toFixed(2)}`;
             const estReturn = (res.total_odds * 100).toFixed(2);
+            const winProbText = (res.win_probability !== undefined && res.win_probability !== null)
+                ? ` • 🎯 Tahmini Tutma Olasılığı: %${res.win_probability}` : '';
+            const evText = (res.expected_value !== undefined && res.expected_value !== null)
+                ? ` • Beklenen Değer (EV): ${res.expected_value}` : '';
             document.getElementById('couponSummarySub').textContent =
-                `Ortalama Güven: %${res.average_confidence} • ${res.match_count} Maç • 100 TL Bahis İçin: ${estReturn} TL`;
+                `Ortalama Güven: %${res.average_confidence}${winProbText}${evText} • ${res.match_count} Maç • 100 TL Bahis İçin: ${estReturn} TL`;
 
             const tbody = document.getElementById('couponMatchesBody');
             tbody.innerHTML = res.matches.map(m => {
@@ -1619,6 +1623,15 @@
                 const leagueBadge = m.league_accuracy !== null
                     ? `<span class="badge ${m.league_accuracy >= 70 ? 'badge-success' : (m.league_accuracy < 50 ? 'badge-error' : '')}" title="Geçmiş ${m.league_evaluated} maçta başarı">%${esc(m.league_accuracy)} (${esc(m.league_evaluated)} maç)</span> <span class="cell-sub">${esc(m.league_note)}</span>`
                     : '<span class="muted">Yeni lig (Geçmiş veri yok)</span>';
+
+                const isStar = (m.pick === 'best_bet' || m.pick === 'python_best_bet');
+                const sourceBadge = m.source === 'python'
+                    ? '<span class="badge" style="background:#e0f2fe; color:#0369a1; font-size:10px; padding:1px 4px;">⚡ Python</span>'
+                    : '<span class="badge" style="background:#f3e8ff; color:#7e22ce; font-size:10px; padding:1px 4px;">🔮 Gemini</span>';
+
+                const calibHtml = m.calibrated_probability !== undefined
+                    ? `<strong>%${esc(m.calibrated_probability)}</strong><div class="cell-sub" style="font-size:10px;">(Güven: %${esc(m.confidence)}${m.calibration_samples ? ` · n=${esc(m.calibration_samples)}` : ''})</div>`
+                    : `<strong>%${esc(m.confidence)}</strong>`;
 
                 return `
                     <tr>
@@ -1630,10 +1643,14 @@
                             </a>
                         </td>
                         <td class="truncate" style="max-width:140px;">${esc(m.league_name)}</td>
-                        <td><span class="badge ${m.pick === 'best_bet' ? 'badge-gold' : 'badge-brand'}" style="font-weight:700;" title="${esc(m.pick_label)}">${m.pick === 'best_bet' ? '⭐ ' : ''}${esc(m.selection)}</span>
-                            <div class="cell-sub">${esc(m.pick_label)}</div></td>
+                        <td>
+                            <span class="badge ${isStar ? 'badge-gold' : 'badge-brand'}" style="font-weight:700;" title="${esc(m.pick_label)}">
+                                ${isStar ? '⭐ ' : ''}${esc(m.selection)}
+                            </span>
+                            <div class="cell-sub" style="margin-top:2px;">${sourceBadge} ${esc(m.pick_label)}</div>
+                        </td>
                         <td class="num" style="font-weight:800; color:var(--brand);">${Number(m.odds).toFixed(2)}</td>
-                        <td class="num"><strong>%${esc(m.confidence)}</strong></td>
+                        <td class="num">${calibHtml}</td>
                         <td>${leagueBadge}</td>
                         <td class="num"><strong style="color:#0284c7;">${esc(m.coupon_score)}</strong></td>
                         <td><a class="btn btn-sm" href="${detailUrl}">İncele</a></td>

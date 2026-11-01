@@ -1847,5 +1847,160 @@ class TestPythonEngine(unittest.TestCase):
             self.assertEqual(common["python"]["best_bet_accuracy"], 0.0)
             self.assertEqual(database.get_leagues_accuracy_report(conn, model="python")["common"]["matches"], 1)
 
+class TestCalibratedCouponEngine(unittest.TestCase):
+    def setUp(self):
+        config.DB_FILE_PATH = TEST_DB
+        database.DB_FILE = TEST_DB
+        database.init_db(TEST_DB)
+        database.clear_db(TEST_DB)
+        import web_server
+        self.app = web_server.app.test_client()
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            try:
+                os.remove(TEST_DB)
+            except OSError:
+                pass
+
+    def test_calibration_shrinkage_small_vs_large_samples(self):
+        """Küçük örneklemde önsele (stated confidence), büyük örneklemde gerçekleşen isabete yakınsar."""
+        import coupon
+
+        # 1. Küçük örneklem: 1 maç, kazanmış (100%), önsel %60
+        small_history = [{
+            "source": "gemini", "sport_type": "FOOTBALL", "market": "ft", "selection": "MS 1",
+            "odds": 1.50, "confidence": 60.0, "won": 1
+        }]
+        cal_small = coupon.build_calibration(small_history)
+        p_small, n_small = coupon.calibrated_probability(
+            cal_small, "gemini", "FOOTBALL", "ft", "MS 1", 1.50, 60.0
+        )
+        self.assertEqual(n_small, 1)
+        # K=8 iken (1 + 8*0.60)/(1 + 8) = 5.8 / 9 = ~%64.4 (100%'den çok 60%'a yakın)
+        self.assertLess(p_small, 70.0)
+        self.assertGreater(p_small, 60.0)
+
+        # 2. Büyük örneklem: 100 maç, %40 tutmuş, önsel %80
+        large_history = [
+            {
+                "source": "gemini", "sport_type": "FOOTBALL", "market": "ft", "selection": "MS 1",
+                "odds": 1.50, "confidence": 80.0, "won": 1 if i < 40 else 0
+            }
+            for i in range(100)
+        ]
+        cal_large = coupon.build_calibration(large_history)
+        p_large, n_large = coupon.calibrated_probability(
+            cal_large, "gemini", "FOOTBALL", "ft", "MS 1", 1.50, 80.0
+        )
+        self.assertEqual(n_large, 100)
+        # 100 örneklemde önsel %80 yerine gerçekleşen %40'a çok yakın olmalı (~%43)
+        self.assertLess(p_large, 45.0)
+        self.assertGreater(p_large, 39.0)
+
+    def test_python_candidate_selected_when_calibrated_score_higher(self):
+        """Python adayı daha yüksek kalibre puana sahip olduğunda kupona seçilir."""
+        import coupon
+        with database.db_session(TEST_DB) as conn:
+            # Geçmiş oluştur: Gemini MS 1 1.50 oranında %30 tuttu, Python ALT 1.50 oranında %80 tuttu
+            for i in range(20):
+                mid = database.save_match(conn, f"HIST_{i}", "H", "A", "Lig", "01.01.2024", "20:00")
+                database.save_result(conn, mid, ht_home=0, ht_away=0,
+                                     ft_home=2 if i < 6 else 0, ft_away=0) # 6 maçta MS 1, 20 maçın hepsinde <=3 gol (ALT)
+                database.save_prediction(conn, mid, {
+                    "best_bet": {"market": "ft", "selection": "MS 1", "odds": 1.50, "confidence": 75}
+                })
+                database.save_python_prediction(conn, mid, {
+                    "best_bet": {"market": "over_under", "selection": "ALT", "odds": 1.50, "confidence": 75}
+                })
+
+            # Yeni aday maçlar
+            m1 = database.save_match(conn, "FUT_1", "Takım A", "Takım B", "Lig", "01.01.2099", "20:00")
+            database.save_prediction(conn, m1, {
+                "predicted_score": "2-0",
+                "best_bet": {"market": "ft", "selection": "MS 1", "odds": 1.50, "confidence": 75}
+            })
+            database.save_python_prediction(conn, m1, {
+                "best_bet": {"market": "over_under", "selection": "ALT", "odds": 1.50, "confidence": 75}
+            })
+
+        # Kupon üret (veritabanı commit edildikten sonra çağrılır)
+        with mock.patch.multiple(config, MIN_MATCH_ODDS=1.30, MIN_COUPON_TOTAL_ODDS=1.10):
+            res = coupon.generate_coupon(match_count=1, today_only=False, db_path=TEST_DB)
+            self.assertTrue(res["success"], res.get("message"))
+            chosen = res["matches"][0]
+            # Kalibre puanı daha yüksek olan Python ⭐ ALT seçilmiş olmalı
+            self.assertEqual(chosen["source"], "python")
+            self.assertEqual(chosen["pick"], "python_best_bet")
+            self.assertEqual(chosen["selection"], "ALT")
+            self.assertGreater(chosen["calibrated_probability"], 65.0)
+
+    def test_candidate_filtered_out_when_below_min_odds(self):
+        """Oran kuralını (min_match_odds) geçmeyen aday elenir, geçen aday seçilir."""
+        import coupon
+        with database.db_session(TEST_DB) as conn:
+            m1 = database.save_match(conn, "FUT_LOW", "Takım A", "Takım B", "Lig", "01.01.2099", "20:00")
+            # 1. tercih 1.20 (düşük), 2. tercih 1.45 (uygun)
+            database.save_prediction(conn, m1, {
+                "predicted_score": "1-0",
+                "best_bet": {"market": "ft", "selection": "MS 1", "odds": 1.20, "confidence": 85},
+                "alt_bet": {"market": "over_under", "selection": "ALT", "odds": 1.45, "confidence": 65}
+            })
+
+        with mock.patch.multiple(config, MIN_MATCH_ODDS=1.30, MIN_COUPON_TOTAL_ODDS=1.10):
+            res = coupon.generate_coupon(match_count=1, today_only=False, db_path=TEST_DB)
+            self.assertTrue(res["success"], res.get("message"))
+            chosen = res["matches"][0]
+            self.assertEqual(chosen["pick"], "alt_bet")
+            self.assertEqual(chosen["odds"], 1.45)
+
+    def test_python_best_bet_coupon_saved_and_evaluated(self):
+        """python_best_bet kuponu kaydedilir ve maç skorları girildiğinde başarıyla sonuçlandırılır."""
+        import coupon
+        with database.db_session(TEST_DB) as conn:
+            m1 = database.save_match(conn, "CPN_PY_1", "Takım A", "Takım B", "Lig", "01.01.2099", "20:00")
+            database.save_python_prediction(conn, m1, {
+                "best_bet": {"market": "ft", "selection": "MS 1", "odds": 1.60, "confidence": 70}
+            })
+
+        # Kuponu kaydet (commit sonrası)
+        coupon_id = coupon.save_played_coupon("banko", [{"id": m1, "pick": "python_best_bet"}], db_path=TEST_DB)
+        self.assertGreater(coupon_id, 0)
+
+        with database.db_session(TEST_DB) as conn:
+            # İlk durum: pending
+            c_data = database.get_coupons(conn)
+            self.assertEqual(c_data["coupons"][0]["status"], "pending")
+
+            # Maç sonuçlandı: Takım A kazandı -> won
+            database.save_result(conn, m1, ht_home=1, ht_away=0, ft_home=2, ft_away=0)
+            c_data_won = database.get_coupons(conn)
+            self.assertEqual(c_data_won["coupons"][0]["status"], "won")
+            self.assertEqual(c_data_won["summary"]["won"], 1)
+
+    def test_win_probability_and_expected_value_in_generated_coupon(self):
+        """Üretilen kuponda win_probability ve expected_value alanları doğru hesaplanır."""
+        import coupon
+        with database.db_session(TEST_DB) as conn:
+            for i in range(2):
+                mid = database.save_match(conn, f"EV_{i}", f"Home_{i}", f"Away_{i}", "Lig", "01.01.2099", "20:00")
+                database.save_prediction(conn, mid, {
+                    "predicted_score": "1-0",
+                    "best_bet": {"market": "ft", "selection": "MS 1", "odds": 1.50, "confidence": 60}
+                })
+
+        with mock.patch.multiple(config, MIN_MATCH_ODDS=1.30, MIN_COUPON_TOTAL_ODDS=1.50):
+            res = coupon.generate_coupon(match_count=2, today_only=False, db_path=TEST_DB)
+            self.assertTrue(res["success"], res.get("message"))
+            self.assertIn("win_probability", res)
+            self.assertIn("expected_value", res)
+            # İki maç: 1.50 * 1.50 = 2.25 total_odds
+            self.assertEqual(res["total_odds"], 2.25)
+            # Kalibre olasılık ~%60 ise win_prob ~ 0.60 * 0.60 = %36.0
+            self.assertAlmostEqual(res["win_probability"], 36.0, delta=2.0)
+            # EV = win_prob / 100 * total_odds = 0.36 * 2.25 = 0.81
+            self.assertAlmostEqual(res["expected_value"], 0.81, delta=0.1)
+
 if __name__ == "__main__":
     unittest.main()
+

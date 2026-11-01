@@ -33,7 +33,7 @@ python3 -m unittest test_app -v
 | `background_job.py` | Genel arka plan iş altyapısı `BackgroundJob`: aynı anda tek iş, paralel worker'lar (ortak kuyruk), ilerleme / kalan süre, iptal, art arda hata sınırı, `StopJob` |
 | `stats_sync.py` | Toplu istatistik işi (bülten sonrası otomatik başlar). Web'de arka plan thread'i, terminalde ilerleme çubuğu. Yarıda kalırsa kalan maçlar sonraki çalıştırmada işlenir |
 | `results_sync.py` | Toplu maç sonuçları işi: tamamlanmış ama skoru olmayan maçların skorlarını arka planda çeker (`/api/admin/jobs/results`). Skoru olan maçlar atlanır ve tekrar güncellenmez |
-| `coupon.py` | **Kupon motoru:** analiz edilmiş, henüz başlamamış maçlardan strateji (banko / value / surprise) ve lig isabeti ağırlığıyla kupon üretir (`/api/coupon/generate`). Oran kuralları **sabit değil**: her üretimde `database.get_coupon_odds_settings` ile Ayarlar'dan (yoksa `.env` `MIN_MATCH_ODDS` / `MIN_COUPON_TOTAL_ODDS`) okunur. Maç tercihi ⭐, oranı eşiğin altındaysa 2. tercih. "Oynadım, Kaydet" ile kupon `coupons` / `coupon_items`'a yazılır (`save_played_coupon`: tercih ve oran istemciden değil maçın son tahmininden alınır) |
+| `coupon.py` | **Kupon motoru:** analiz edilmiş, henüz başlamamış maçlardan strateji (banko / value / surprise) ve lig isabeti ağırlığıyla kupon üretir (`/api/coupon/generate`). Tercih olasılıkları şişkin model güveninden değil, geçmiş isabet verisi üzerinden Bayesyen hiyerarşik daraltma (shrinkage) ile kalibre edilir. Adaylar: Gemini ⭐, Gemini 2. tercih, Python ⭐, Python 2. tercih arasından min oran eşiğini (`MIN_MATCH_ODDS`) geçen ve kalibre puanı en yüksek olan seçilir. Çıktıda kupon tutma olasılığı (`win_probability`) ve beklenen değer (`expected_value`) hesaplanır. "Oynadım, Kaydet" ile kupon `coupons` / `coupon_items`'a yazılır (`save_played_coupon`: tercih ve oran istemciden değil maçın tahmininden alınır) |
 | `prediction_batch.py` | "🔮 Maçları Analiz Et": bitmemiş, analiz edilmemiş, istatistikleri dolu, ligi izinli maçları `GEMINI_PARALLEL_REQUESTS` paralel istekle Gemini'ye gönderir. Gemini kapatılırsa (`StopJob`) veya art arda 5 hata olursa durur |
 | `data_source.py` | Aktif veri kaynağı seçimi (`DATA_SOURCE=iddaa\|nesine`). `app.py` / `web_server.py` kaynak modüllerini **doğrudan değil bunun üzerinden** çağırır |
 | `iddaa_api.py` | iddaa.com bülten / istatistik / sonuç çağrıları; veriyi Nesine bülten formatına ve uygulama istatistik formatına dönüştürür |
@@ -100,8 +100,11 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
 - **Gemini ve Python isabeti adil kıyaslanır:** Tercih İsabetleri sekmelerindeki "Ortak Maçlarda ⭐ İsabet" kartı yalnızca ikisinin de tahmini ve sonucu olan maçları sayar (`database.calculate_common_prediction_accuracy`). Python'un genel isabeti yalnızca kendi maç kümesini gösterir.
 - **Kupon oran kuralları dinamiktir:** maç başına min oran (`MIN_MATCH_ODDS`) ve min toplam kupon oranı (`MIN_COUPON_TOTAL_ODDS`)
   `settings` tablosundan (Lig Yönetimi › Ayarlar), yoksa `.env`'den okunur: `database.get_coupon_odds_settings`. Kodda veya arayüzde
-  1.30 / 2.00 gibi değerleri **sabit yazma**; kupon isteği bu kuralları parametreyle ezemez. Maç tercihi ⭐, oranı eşiğin altındaysa
-  2. tercih; ikisi de altındaysa maç kupona girmez. Başlamış maçlar kupona girmez. Lig isabeti önbelleğe alınmaz.
+  1.30 / 2.00 gibi değerleri **sabit yazma**; kupon isteği bu kuralları parametreyle ezemez.
+- **Kupon motoru kalibre olasılık kullanır:** Maç tercihi Gemini'nin şişkin güven yüzdesine göre değil, geçmiş gerçekleşen isabet üzerinden
+  Empirical Bayes / Hiyerarşik daraltma (shrinkage) ile kalibre edilen olasılığa göre seçilir. Adaylar: Gemini ⭐, Gemini 2. tercih, Python ⭐,
+  Python 2. tercih arasından min oran eşiğini (`MIN_MATCH_ODDS`) geçen ve kalibre puanı en yüksek olanıdır. Başlamış maçlar kupona girmez.
+  Lig isabeti önbelleğe alınmaz (`database.get_league_prediction_stats` ve `database.get_league_python_prediction_stats`).
 - **Oynanan kuponlar:** "💾 Oynadım, Kaydet" kuponu `coupons` + `coupon_items` tablolarına yazar. Tuttu / yattı durumu **saklanmaz**;
   `database.get_coupons` her okumada tercihleri `rules.selection_won` ile maç sonucundan hesaplar (bir tercih yattı → `lost`,
   hepsi tuttu → `won`, sonucu bekleyen var → `pending`). Skor girilince kupon kendiliğinden değerlendirilir; ayrı bir değerlendirme işi yazma.

@@ -709,6 +709,45 @@ def calculate_common_prediction_accuracy(conn: sqlite3.Connection) -> Dict[str, 
             stats[f"{key}_accuracy"] = round(stats[f"{key}_correct"] / stats[f"{key}_total"] * 100, 1) if stats[f"{key}_total"] else None
     return {"matches": len(rows), **totals}
 
+def get_pick_history(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """
+    Sonuçlanmış maçlar için tüm aday tercihlerini (Gemini ⭐/2, Python ⭐/2) ve tutma durumlarını döner (kupon kalibrasyonu için);
+    oranı olmayan tercihler oran bandına konamayacağı için atlanır:
+    [{source, kind, sport_type, market, selection, odds, confidence, won}, ...]
+    """
+    rows = conn.execute(f"""
+        SELECT m.sport_type, r.ht_home_score, r.ht_away_score, r.ft_home_score, r.ft_away_score,
+               r.is_over_3_goals, r.is_kg_var,
+               p.best_bet_market AS g_best_market, p.best_bet_selection AS g_best_selection,
+               p.best_bet_odds AS g_best_odds, p.best_bet_confidence AS g_best_confidence,
+               p.alt_bet_market AS g_alt_market, p.alt_bet_selection AS g_alt_selection,
+               p.alt_bet_odds AS g_alt_odds, p.alt_bet_confidence AS g_alt_confidence,
+               pp.best_bet_market AS p_best_market, pp.best_bet_selection AS p_best_selection,
+               pp.best_bet_odds AS p_best_odds, pp.best_bet_confidence AS p_best_confidence,
+               pp.alt_bet_market AS p_alt_market, pp.alt_bet_selection AS p_alt_selection,
+               pp.alt_bet_odds AS p_alt_odds, pp.alt_bet_confidence AS p_alt_confidence
+        FROM matches m
+        JOIN results r ON r.match_id = m.id
+        {_LATEST_PREDICTION_JOIN}
+        LEFT JOIN python_predictions pp ON pp.match_id = m.id
+        WHERE p.id IS NOT NULL OR pp.id IS NOT NULL
+    """).fetchall()
+
+    history: List[Dict[str, Any]] = []
+    for r in rows:
+        row = dict(r)
+        sport = row["sport_type"] or rules.FOOTBALL
+        for source, prefix in (("gemini", "g"), ("python", "p")):
+            for kind in ("best", "alt"):
+                market, selection, odds = (row[f"{prefix}_{kind}_{field}"] for field in ("market", "selection", "odds"))
+                won = rules.selection_won(market, selection, row) if market and selection and odds else None
+                if won is not None:
+                    confidence = row[f"{prefix}_{kind}_confidence"]
+                    history.append({"source": source, "kind": f"{kind}_bet", "sport_type": sport, "market": market,
+                                    "selection": selection, "odds": float(odds),
+                                    "confidence": float(confidence) if confidence is not None else None, "won": int(won)})
+    return history
+
 def get_leagues_accuracy_report(conn: sqlite3.Connection, model: str = "gemini", query: str = "") -> Dict[str, Any]:
     """Lig Yönetimi ve Tercih İsabetleri için belirtilen modele (gemini veya python) göre başarı raporu döner."""
     is_python = (model.lower() == "python")
@@ -1228,7 +1267,8 @@ def get_coupon_candidates(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
         SELECT {_MATCH_COLUMNS}, {_PREDICTION_COLUMNS}
         {_MATCH_JOINS}
         {_LATEST_PREDICTION_JOIN}
-        WHERE m.match_completed = 0 AND p.id IS NOT NULL
+        WHERE m.match_completed = 0
+          AND (p.id IS NOT NULL OR EXISTS (SELECT 1 FROM python_predictions pp WHERE pp.match_id = m.id))
         ORDER BY {_CHRONOLOGICAL_DATE} ASC, m.match_time ASC
     """).fetchall()
     now = datetime.now(ZoneInfo(config.SOURCE_TIMEZONE))
