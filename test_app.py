@@ -853,21 +853,86 @@ class TestBasketball(unittest.TestCase):
         self.assertNotIn("predicted_kg", schema.properties)
         self.assertNotIn("predicted_over_under_3", schema.properties)
 
+    def test_parse_total_points_option_and_main_line(self):
+        self.assertEqual(rules.parse_total_points_option("162.5 Alt"), (162.5, "ALT"))
+        self.assertEqual(rules.parse_total_points_option("210.5 Üst"), (210.5, "ÜST"))
+        self.assertEqual(rules.parse_total_points_option("210.5 Ust"), (210.5, "ÜST"))
+        self.assertIsNone(rules.parse_total_points_option("invalid"))
+        odds = [
+            {"market_name": "Maç Sonucu", "option_name": "MS 1", "odds_value": 1.50},
+            {"market_name": "Toplam Sayı Alt/Üst", "option_name": "237.5 Alt", "odds_value": 1.62},
+            {"market_name": "Toplam Sayı Alt/Üst", "option_name": "237.5 Üst", "odds_value": 1.61},
+        ]
+        self.assertEqual(rules.main_total_points_line(odds), 237.5)
+
+    def test_total_points_helpers(self):
+        """Yön ayrıştırma, sınırda iade ve kupon kalibrasyon anahtarı (sınırsız yön)."""
+        self.assertEqual([rules.total_points_direction(t) for t in ("ÜST", "alt", "162.5 Üst", "162.5 ÜST", "x", None)],
+                         ["ÜST", "ALT", "ÜST", "ÜST", None, None])
+        self.assertTrue(rules.total_points_hit(170, 162.5, "ÜST"))
+        self.assertFalse(rules.total_points_hit(170, 162.5, "ALT"))
+        self.assertIsNone(rules.total_points_hit(162, 162.0, "ÜST"))
+        self.assertIsNone(rules.total_points_hit(170, 162.5, None))
+        self.assertEqual(rules.calibration_selection("total_points", "162.5 ÜST"), "ÜST")
+        self.assertEqual(rules.calibration_selection("ft", "MS 1"), "MS 1")
+
+    def test_bet_candidates_includes_total_points_for_basketball(self):
+        odds = [
+            {"market_name": "Maç Sonucu", "option_name": "MS 1", "odds_value": 1.50},
+            {"market_name": "Toplam Sayı Alt/Üst", "option_name": "237.5 Alt", "odds_value": 1.62},
+            {"market_name": "Toplam Sayı Alt/Üst", "option_name": "237.5 Üst", "odds_value": 1.61},
+        ]
+        # Basketbolda total_points adayı üretilmeli
+        bb_cands = rules.bet_candidates(odds, sport_type="BASKETBALL")
+        markets = [c["market"] for c in bb_cands]
+        self.assertIn("total_points", markets)
+        selections = [c["selection"] for c in bb_cands if c["market"] == "total_points"]
+        self.assertIn("237.5 ALT", selections)
+        self.assertIn("237.5 ÜST", selections)
+
+        # Futbolda total_points adayı üretilmemeli
+        fb_cands = rules.bet_candidates(odds, sport_type="FOOTBALL")
+        self.assertNotIn("total_points", [c["market"] for c in fb_cands])
+
+    def test_selection_won_total_points(self):
+        res = {"ft_home_score": 90, "ft_away_score": 80}  # Toplam 170
+        self.assertTrue(rules.selection_won("total_points", "162.5 ÜST", res))
+        self.assertFalse(rules.selection_won("total_points", "162.5 ALT", res))
+        self.assertFalse(rules.selection_won("total_points", "175.5 ÜST", res))
+        self.assertTrue(rules.selection_won("total_points", "175.5 ALT", res))
+        # Tam sayı sınırda iade (push) -> None
+        self.assertIsNone(rules.selection_won("total_points", "170 ÜST", res))
+        self.assertIsNone(rules.selection_won("total_points", "170 ALT", res))
+
     def test_finalize_basketball_prediction(self):
         prediction = {
             "predicted_ht_result": "İY 1", "predicted_ft_result": "MS 1", "predicted_score": "112-105", "predicted_total_points": 230,
         }
-        result = gemini_engine._finalize(prediction, {"match": {"sport_type": "BASKETBALL"}, "odds": []})
-        # Toplam sayı skorla tutarlı hale getirilir; Alt/Üst ve KG boş kalır
+        # Sınır yoksa Alt/Üst None
+        result = gemini_engine._finalize(prediction.copy(), {"match": {"sport_type": "BASKETBALL"}, "odds": []})
         self.assertEqual(result["predicted_total_points"], 217)
         self.assertIsNone(result["predicted_over_under_3"])
         self.assertIsNone(result["predicted_kg"])
 
+        # Sınır varsa (örn 200.5) predicted_total_points 217 > 200.5 -> "ÜST"
+        result_with_line = gemini_engine._finalize(prediction.copy(), {
+            "match": {"sport_type": "BASKETBALL", "total_points_line": 200.5}, "odds": []
+        })
+        self.assertEqual(result_with_line["predicted_total_points"], 217)
+        self.assertEqual(result_with_line["predicted_over_under_3"], "ÜST")
+
     def test_basketball_evaluation(self):
-        result = {"ht_home_score": 56, "ht_away_score": 50, "ft_home_score": 110, "ft_away_score": 104}
+        result = {"ht_home_score": 56, "ht_away_score": 50, "ft_home_score": 110, "ft_away_score": 104} # Toplam 214
+        # Sınır yoksa over_under None
         ev = rules.evaluate_prediction({"predicted_ht_result": "İY 1", "predicted_ft_result": "MS 1", "predicted_score": "112-105",
                                         "predicted_total_points": 217, "predicted_over_under_3": "ÜST"}, result, "BASKETBALL")
-        self.assertEqual(ev, {"ht": True, "ht_score": None, "ft": True, "over_under": None, "kg": None, "score": False, "total_diff": 3, "best_bet": None, "alt_bet": None})
+        self.assertIsNone(ev["over_under"])
+
+        # Sınır varsa (210.5) ve tahmin "ÜST" -> True
+        result_with_line = {**result, "total_points_line": 210.5}
+        ev2 = rules.evaluate_prediction({"predicted_ht_result": "İY 1", "predicted_ft_result": "MS 1", "predicted_score": "112-105",
+                                         "predicted_total_points": 217, "predicted_over_under_3": "ÜST"}, result_with_line, "BASKETBALL")
+        self.assertTrue(ev2["over_under"])
 
     def test_basketball_results_and_accuracy(self):
         if os.path.exists(TEST_DB):
@@ -900,6 +965,59 @@ class TestBasketball(unittest.TestCase):
         self.assertEqual((accuracy["total_evaluated"], accuracy["ft_total"], accuracy["ou_total"], accuracy["kg_total"]), (2, 2, 1, 1))
         self.assertEqual((accuracy["ft_accuracy"], accuracy["kg_accuracy"]), (100.0, 100.0))
         self.assertEqual((accuracy["total_points_evaluated"], accuracy["total_points_avg_diff"]), (1, 21.0))
+
+    def test_bulletin_sync_sets_total_points_line_for_basketball_only(self):
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
+        database.init_db(TEST_DB)
+        events = [
+            {
+                "TYPE": "2", "C": "BB_SYNC_1", "HN": "Team A", "AN": "Team B", "ENN": "NBA", "D": "01.01.2099", "T": "02:00",
+                "MA": [{"MT": 2, "MST": 114, "SOV": 222.5, "OCA": [{"N": 1, "O": 1.60}, {"N": 2, "O": 1.65}]}]
+            },
+            {
+                "TYPE": "1", "C": "FB_SYNC_1", "HN": "Team C", "AN": "Team D", "ENN": "Premier", "D": "01.01.2099", "T": "20:00",
+                "MA": [{"MT": 1, "MST": 1, "OCA": [{"N": 1, "O": 1.80}]}]
+            }
+        ]
+        with database.db_session(TEST_DB) as conn:
+            database.sync_bulletin_matches_and_odds(conn, events, allowed_types=("1", "2"))
+            bb_match = conn.execute("SELECT sport_type, total_points_line FROM matches WHERE code = 'BB_SYNC_1'").fetchone()
+            fb_match = conn.execute("SELECT sport_type, total_points_line FROM matches WHERE code = 'FB_SYNC_1'").fetchone()
+
+        os.remove(TEST_DB)
+        self.assertEqual(bb_match["sport_type"], "BASKETBALL")
+        self.assertEqual(bb_match["total_points_line"], 222.5)
+        self.assertEqual(fb_match["sport_type"], "FOOTBALL")
+        self.assertIsNone(fb_match["total_points_line"])
+
+    def test_python_basketball_total_points_probabilities(self):
+        import python_engine
+        # 1. total_points_line olduğunda over_3_prob hesaplanmalı ve beklenen sayı arttıkça P(ÜST) artmalı
+        index = python_engine._ResultsIndex([])
+        ctx_high = {"home_team_id": 1, "away_team_id": 2, "league_id": 1, "sort_key": "9999", "total_points_line": 150.0}
+        ctx_low = {"home_team_id": 1, "away_team_id": 2, "league_id": 1, "sort_key": "9999", "total_points_line": 200.0}
+
+        pred_high = python_engine.calculate_basketball_probabilities(ctx_high, index)
+        pred_low = python_engine.calculate_basketball_probabilities(ctx_low, index)
+
+        self.assertIsNotNone(pred_high["over_3_prob"])
+        self.assertIsNotNone(pred_low["over_3_prob"])
+        # Sınır 150 iken P(ÜST), sınır 200 iken olan P(ÜST)'den kesinlikle daha büyük olmalıdır (monotonik)
+        self.assertGreater(pred_high["over_3_prob"], pred_low["over_3_prob"])
+        self.assertEqual(pred_high["predicted_over_under_3"], "ÜST")
+        self.assertEqual(pred_low["predicted_over_under_3"], "ALT")
+
+        # 2. total_points tercihi determine_python_best_and_alt_bet tarafından adaya dönüştürülmeli
+        odds = [
+            {"market_name": "Maç Sonucu", "option_name": "MS 1", "odds_value": 1.25},
+            {"market_name": "Toplam Sayı Alt/Üst", "option_name": "150.0 Üst", "odds_value": 1.85},
+            {"market_name": "Toplam Sayı Alt/Üst", "option_name": "150.0 Alt", "odds_value": 1.45},
+        ]
+        bb, ab = python_engine.determine_python_best_and_alt_bet(pred_high, odds, sport_type=rules.BASKETBALL)
+        self.assertIsNotNone(bb)
+        # Güveni yüksek ve EV'si iyi olduğu için total_points seçilebilir
+        self.assertIn(bb["market"], ("ft", "total_points"))
 
 class TestBestBet(unittest.TestCase):
     """⭐ En güçlü tercih (oran sınırı yok) + oranı MIN_BEST_BET_ODDS altındaysa oranı eşik üstü 2. tercih; seçimlerin kendisi değerlendirilir."""
@@ -1557,16 +1675,27 @@ class TestSourceSwitchAndSync(unittest.TestCase):
         self.assertTrue(generate(True)["success"])
 
     def test_leagues_accuracy_endpoint(self):
-        res = self.client.get("/api/leagues/accuracy")
+        # Gemini model testi
+        res = self.client.get("/api/leagues/accuracy?model=gemini")
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
         self.assertTrue(data["success"])
+        self.assertEqual(data["model"], "gemini")
         self.assertIn("summary", data)
         self.assertIn("leagues", data)
         summary = data["summary"]
         for key in ("best_bet_accuracy", "alt_bet_accuracy", "best_bet_total", "alt_bet_total", "total_evaluated_matches"):
             self.assertIn(key, summary)
         self.assertIsInstance(data["leagues"], list)
+
+        # Python model testi
+        res_py = self.client.get("/api/leagues/accuracy?model=python")
+        self.assertEqual(res_py.status_code, 200)
+        data_py = res_py.get_json()
+        self.assertTrue(data_py["success"])
+        self.assertEqual(data_py["model"], "python")
+        self.assertIn("summary", data_py)
+        self.assertIn("leagues", data_py)
 
     def test_predicted_ht_score_flow(self):
         with database.db_session(TEST_DB) as conn:
@@ -1591,5 +1720,424 @@ class TestSourceSwitchAndSync(unittest.TestCase):
             self.assertTrue(ev["ht_score"])
             self.assertTrue(ev["score"])
 
+class TestPythonEngine(unittest.TestCase):
+    def setUp(self):
+        config.DB_FILE_PATH = TEST_DB
+        database.DB_FILE = TEST_DB
+        database.init_db(TEST_DB)
+        database.clear_db(TEST_DB)
+        import web_server
+        self.app = web_server.app.test_client()
+        self.sample_stats = {
+            "h2h_data": [{"date": "2025-01-01", "home": "Takım A", "away": "Takım B", "score": "1-1"}],
+            "home_last": [{"date": "2026-10-01", "home": "Takım A", "away": "Takım C", "score": "2-1"}],
+            "away_last": [{"date": "2026-10-01", "home": "Takım D", "away": "Takım B", "score": "0-1"}],
+            "missing": None,
+            "league_table": None
+        }
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            try:
+                os.remove(TEST_DB)
+            except OSError:
+                pass
+
+    def test_poisson_pmf(self):
+        import python_engine
+        p0 = python_engine.poisson_pmf(0, 1.0)
+        p1 = python_engine.poisson_pmf(1, 1.0)
+        # e^-1 ~= 0.367879
+        self.assertAlmostEqual(p0, 0.367879, places=4)
+        self.assertAlmostEqual(p1, 0.367879, places=4)
+        # Toplam olasılık 1'e yakın olmalı
+        total_p = sum(python_engine.poisson_pmf(k, 1.5) for k in range(15))
+        self.assertAlmostEqual(total_p, 1.0, places=4)
+
+    def test_generate_and_isolate_python_prediction(self):
+        import python_engine
+        with database.db_session(TEST_DB) as conn:
+            # Geçmiş sonuçlar ekle (veri seti)
+            m_past = database.save_match(conn, "PAST_1", "Real", "Barca", "La Liga", "01.01.2024", "20:00")
+            database.save_match_stats(conn, m_past, **self.sample_stats)
+            database.save_result(conn, m_past, ht_home=1, ht_away=0, ft_home=3, ft_away=1)
+
+            # Yeni maç
+            m_new = database.save_match(conn, "NEW_1", "Real", "Barca", "La Liga", "01.01.2099", "20:00")
+            database.save_match_stats(conn, m_new, **self.sample_stats)
+            database.set_all_leagues_gemini_analysis(conn, True)
+
+            # Python tahmini üret
+            res = python_engine.generate_python_prediction(conn, m_new)
+            self.assertIsNotNone(res)
+            self.assertEqual(res["model_type"], "poisson_xg")
+            self.assertIn("predicted_score", res)
+            self.assertIn("predicted_ft_result", res)
+            self.assertIn("predicted_ht_result", res)
+            self.assertIn("predicted_ht_score", res)
+            self.assertIn("home_win_prob", res)
+
+            # python_predictions tablosundan oku
+            py_pred = database.get_python_prediction(conn, m_new)
+            self.assertIsNotNone(py_pred)
+            self.assertEqual(py_pred["match_id"], m_new)
+
+            # İZOLASYON KONTROLÜ: predictions tablosu kesinlikle BOŞ olmalı!
+            gemini_preds = database.get_match_predictions(conn, m_new)
+            self.assertEqual(len(gemini_preds), 0, "Gemini predictions tablosuna Python tahmini sızmamalı!")
+
+            # Şimdi Gemini tahmini kaydedildiğinde python_predictions'ın ezilmediğini doğrula
+            database.save_prediction(conn, m_new, {
+                "predicted_ft_result": "MS 1",
+                "predicted_score": "2-1",
+                "confidence_score": 80
+            })
+            self.assertEqual(len(database.get_match_predictions(conn, m_new)), 1)
+            # Python tahmini hâlâ duruyor
+            py_pred_after = database.get_python_prediction(conn, m_new)
+            self.assertIsNotNone(py_pred_after)
+            self.assertEqual(py_pred_after["predicted_score"], py_pred["predicted_score"])
+
+    def test_api_python_analyze_and_sync(self):
+        import python_engine
+        with database.db_session(TEST_DB) as conn:
+            m_id = database.save_match(conn, "API_TEST_1", "Arsenal", "Chelsea", "Premier League", "01.01.2099", "20:00")
+            database.save_match_stats(conn, m_id, **self.sample_stats)
+            database.set_all_leagues_gemini_analysis(conn, True)
+            database.save_prediction(conn, m_id, {"predicted_ft_result": "MS 1", "predicted_score": "2-0"})
+
+        # 1. Tek maç Python analizi endpoint'i
+        res = self.app.post(f"/api/matches/{m_id}/python_analyze")
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["prediction"]["model_type"], "poisson_xg")
+
+        # 2. Toplu sync endpoint'i
+        res_sync = self.app.post("/api/python_engine/sync")
+        self.assertEqual(res_sync.status_code, 200)
+        self.assertTrue(res_sync.get_json()["success"])
+
+        # 3. Detay endpoint'inde python_prediction alanının geldiğini doğrula
+        res_det = self.app.get(f"/api/matches/{m_id}/details")
+        self.assertEqual(res_det.status_code, 200)
+        det_data = res_det.get_json()["data"]
+        self.assertIn("python_prediction", det_data)
+        self.assertIsNotNone(det_data["python_prediction"])
+        self.assertIn("predictions", det_data)
+        self.assertEqual(len(det_data["predictions"]), 1)
+
+    def test_python_blocked_when_h2h_missing(self):
+        """Gemini gibi, Python modeli de aralarındaki maçlar (H2H) yoksa tahmin üretmemelidir."""
+        import python_engine
+        with database.db_session(TEST_DB) as conn:
+            # H2H eksik maç
+            no_h2h_id = database.save_match(conn, "NO_H2H_1", "Takım X", "Takım Y", "Lig", "01.01.2099", "20:00")
+            database.set_all_leagues_gemini_analysis(conn, True)
+            database.save_match_stats(conn, no_h2h_id,
+                h2h_data=None,
+                home_last=[{"date": "2026-10-01", "home": "X", "away": "A", "score": "1-0"}],
+                away_last=[{"date": "2026-10-01", "home": "B", "away": "Y", "score": "0-1"}],
+                missing=None,
+                league_table=None
+            )
+            # 1. Doğrudan çağrıda None dönmeli
+            pred = python_engine.generate_python_prediction(conn, no_h2h_id)
+            self.assertIsNone(pred, "H2H eksik maç için Python tahmini üretilmemeli!")
+
+        # 2. Web API 409 MISSING_STATS dönmeli
+        res = self.app.post(f"/api/matches/{no_h2h_id}/python_analyze")
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.get_json()["code"], "MISSING_STATS")
+
+    def test_hybrid_random_forest_training_and_prediction(self):
+        import python_engine
+        with database.db_session(TEST_DB) as conn:
+            # 20 bitmiş maç ekleyerek Random Forest eşiğini (>= 15) aşalım
+            for i in range(20):
+                mid = database.save_match(conn, f"TRAIN_{i}", f"Team_{i%4}", f"Team_{(i+1)%4}", "Lig", "01.01.2024", "20:00")
+                database.save_match_stats(conn, mid, **self.sample_stats)
+                database.save_result(conn, mid, ht_home=1, ht_away=0, ft_home=2 if i % 2 == 0 else 0, ft_away=1)
+
+            # Test maçı ve oranlar ekle
+            test_mid = database.save_match(conn, "TEST_HYBRID_1", "Team_0", "Team_1", "Lig", "01.01.2099", "20:00")
+            database.save_match_stats(conn, test_mid, **self.sample_stats)
+            database.set_all_leagues_gemini_analysis(conn, True)
+            database.save_odds(conn, test_mid, [
+                {"market_name": "Maç Sonucu", "option_name": "MS 1", "odds_value": 1.20},
+                {"market_name": "Maç Sonucu", "option_name": "MS 0", "odds_value": 3.80},
+                {"market_name": "Maç Sonucu", "option_name": "MS 2", "odds_value": 6.50},
+                {"market_name": "Karşılıklı Gol", "option_name": "KG VAR", "odds_value": 1.75},
+                {"market_name": "3.5 Gol Alt/Üst", "option_name": "3.5 Alt", "odds_value": 1.35},
+            ])
+
+            pred = python_engine.generate_python_prediction(conn, test_mid)
+            self.assertIsNotNone(pred)
+            self.assertEqual(pred["model_type"], "hybrid_rf_poisson")
+            self.assertIn("home_win_prob", pred)
+            self.assertIn("predicted_ft_result", pred)
+            self.assertIn("predicted_over_under_3", pred)
+            self.assertIn("predicted_kg", pred)
+            self.assertGreaterEqual(pred["confidence_score"], 50)
+            # 1. Tercih ve 2. Tercih kontrolü
+            self.assertIsNotNone(pred.get("best_bet"))
+            self.assertIn("selection", pred["best_bet"])
+            self.assertIn("odds", pred["best_bet"])
+            # Oran 1.20 < 1.30 ise 2. tercih üretilmiş olmalı
+            if pred["best_bet"]["odds"] < 1.30:
+                self.assertIsNotNone(pred.get("alt_bet"))
+                self.assertGreaterEqual(pred["alt_bet"]["odds"], 1.30)
+
+    def test_ht_probabilities_come_from_poisson_not_formula(self):
+        """İY adayları Poisson İY matrisinden gelir; olasılık yoksa (basketbol) İY adayı değerlendirilmez."""
+        import python_engine
+        probs = python_engine.calculate_football_probabilities(1.6, 1.1)
+        self.assertAlmostEqual(probs["ht_home_prob"] + probs["ht_draw_prob"] + probs["ht_away_prob"], 1.0, delta=0.03)
+        odds = [{"market_name": "İlk Yarı Sonucu", "option_name": "İY 0", "odds_value": 2.10},
+                {"market_name": "İlk Yarı Sonucu", "option_name": "İY 1", "odds_value": 3.00}]
+        pred = {"home_win_prob": 0.4, "draw_prob": 0.3, "away_win_prob": 0.3, "over_3_prob": 0.3, "kg_prob": 0.5}
+        self.assertEqual(python_engine.determine_python_best_and_alt_bet(pred, odds), (None, None))
+        pred.update(ht_home_prob=0.2, ht_draw_prob=0.55, ht_away_prob=0.25)
+        best, _ = python_engine.determine_python_best_and_alt_bet(pred, odds)
+        self.assertEqual((best["market"], best["selection"], best["confidence"]), ("ht", "İY 0", 55))
+
+    def test_confidence_is_raw_probability(self):
+        """Güven yüzdesi şişirilmez: ek puan ve alt sınır yok."""
+        import python_engine
+        self.assertEqual(python_engine._confidence(0.37), 37)
+        probs = python_engine.calculate_football_probabilities(1.2, 1.2)
+        top = max(probs["home_win_prob"], probs["draw_prob"], probs["away_win_prob"])
+        self.assertAlmostEqual(probs["confidence_score"], top * 100, delta=1.5)
+        self.assertLess(probs["confidence_score"], 50)
+
+    def test_results_index_ignores_matches_from_the_future(self):
+        """Yedek ortalama yalnızca maçtan ÖNCE oynanmış maçlardan hesaplanır."""
+        import python_engine
+        index = python_engine._ResultsIndex([
+            {"home_team_id": 1, "away_team_id": 2, "league_id": 7, "sort_key": "2024-01-01 20:00", "ft_home_score": 2, "ft_away_score": 0},
+            {"home_team_id": 1, "away_team_id": 3, "league_id": 7, "sort_key": "2024-03-01 20:00", "ft_home_score": 6, "ft_away_score": 0},
+        ])
+        self.assertEqual(index.averages(1, True, 7, "2024-02-01 20:00"), (2.0, 0.0, 1))
+        self.assertEqual(index.averages(1, True, 7, "2024-01-01 20:00")[2], 0)
+
+    def test_walk_forward_trains_only_on_earlier_matches(self):
+        """Her dilim yalnızca kendinden önceki maçlarla eğitilir; tüm bitmiş maçlar tahmin edilir."""
+        import python_engine
+        with database.db_session(TEST_DB) as conn:
+            database.set_all_leagues_gemini_analysis(conn, True)
+            for i in range(40):
+                mid = database.save_match(conn, f"WF_{i}", f"Team_{i % 5}", f"Team_{(i + 2) % 5}", "Lig", f"{i + 1:02d}.01.2024", "20:00")
+                database.save_match_stats(conn, mid, **self.sample_stats)
+                database.save_result(conn, mid, ht_home=0, ht_away=0, ft_home=i % 3, ft_away=(i + 1) % 2)
+            database.set_all_leagues_gemini_analysis(conn, True)
+
+            train_sizes = []
+            real_fit = python_engine._fit_models
+            def spy(X, labels):
+                train_sizes.append(len(X))
+                return real_fit(X, labels)
+            with mock.patch.object(python_engine, "_fit_models", side_effect=spy):
+                count = python_engine.recalculate_completed_matches_walk_forward(conn)
+
+            self.assertEqual(count, 40)
+            self.assertTrue(train_sizes)
+            self.assertEqual(train_sizes, sorted(train_sizes))
+            self.assertGreaterEqual(train_sizes[0], python_engine.MIN_TRAINING_MATCHES)
+            self.assertLess(train_sizes[-1], 40, "Son dilim bile kendini görmeden eğitilmeli")
+            predicted = conn.execute("SELECT COUNT(*) FROM python_predictions").fetchone()[0]
+            self.assertEqual(predicted, 40)
+            models = {r[0] for r in conn.execute("SELECT model_type FROM python_predictions")}
+            self.assertEqual(models, {"poisson_xg", "hybrid_rf_poisson"})
+
+    def test_common_accuracy_only_counts_matches_with_both_predictions(self):
+        with database.db_session(TEST_DB) as conn:
+            both = database.save_match(conn, "COM_1", "A", "B", "Lig", "01.01.2024", "20:00")
+            only_py = database.save_match(conn, "COM_2", "C", "D", "Lig", "01.01.2024", "21:00")
+            for mid in (both, only_py):
+                database.save_result(conn, mid, ht_home=0, ht_away=0, ft_home=2, ft_away=0)
+            database.save_prediction(conn, both, {"predicted_ft_result": "MS 1", "best_bet": {"market": "ft", "selection": "MS 1", "odds": 1.5, "confidence": 70}})
+            database.save_python_prediction(conn, both, {"best_bet": {"market": "ft", "selection": "MS 2", "odds": 4.0, "confidence": 40}})
+            database.save_python_prediction(conn, only_py, {"best_bet": {"market": "ft", "selection": "MS 1", "odds": 1.5, "confidence": 70}})
+
+            common = database.calculate_common_prediction_accuracy(conn)
+            self.assertEqual(common["matches"], 1)
+            self.assertEqual(common["gemini"]["best_bet_accuracy"], 100.0)
+            self.assertEqual(common["python"]["best_bet_accuracy"], 0.0)
+            self.assertEqual(database.get_leagues_accuracy_report(conn, model="python")["common"]["matches"], 1)
+
+class TestCalibratedCouponEngine(unittest.TestCase):
+    def setUp(self):
+        config.DB_FILE_PATH = TEST_DB
+        database.DB_FILE = TEST_DB
+        database.init_db(TEST_DB)
+        database.clear_db(TEST_DB)
+        import web_server
+        self.app = web_server.app.test_client()
+
+    def tearDown(self):
+        if os.path.exists(TEST_DB):
+            try:
+                os.remove(TEST_DB)
+            except OSError:
+                pass
+
+    def test_calibration_shrinkage_small_vs_large_samples(self):
+        """Küçük örneklemde önsele (stated confidence), büyük örneklemde gerçekleşen isabete yakınsar."""
+        import coupon
+
+        # 1. Küçük örneklem: 1 maç, kazanmış (100%), önsel %60
+        small_history = [{
+            "source": "gemini", "sport_type": "FOOTBALL", "market": "ft", "selection": "MS 1",
+            "odds": 1.50, "confidence": 60.0, "won": 1
+        }]
+        cal_small = coupon.build_calibration(small_history)
+        p_small, n_small = coupon.calibrated_probability(
+            cal_small, "gemini", "FOOTBALL", "ft", "MS 1", 1.50, 60.0
+        )
+        self.assertEqual(n_small, 1)
+        # K=8 iken (1 + 8*0.60)/(1 + 8) = 5.8 / 9 = ~%64.4 (100%'den çok 60%'a yakın)
+        self.assertLess(p_small, 70.0)
+        self.assertGreater(p_small, 60.0)
+
+        # 2. Büyük örneklem: 100 maç, %40 tutmuş, önsel %80
+        large_history = [
+            {
+                "source": "gemini", "sport_type": "FOOTBALL", "market": "ft", "selection": "MS 1",
+                "odds": 1.50, "confidence": 80.0, "won": 1 if i < 40 else 0
+            }
+            for i in range(100)
+        ]
+        cal_large = coupon.build_calibration(large_history)
+        p_large, n_large = coupon.calibrated_probability(
+            cal_large, "gemini", "FOOTBALL", "ft", "MS 1", 1.50, 80.0
+        )
+        self.assertEqual(n_large, 100)
+        # 100 örneklemde önsel %80 yerine gerçekleşen %40'a çok yakın olmalı (~%43)
+        self.assertLess(p_large, 45.0)
+        self.assertGreater(p_large, 39.0)
+
+    def test_python_candidate_selected_when_calibrated_score_higher(self):
+        """Python adayı daha yüksek kalibre puana sahip olduğunda kupona seçilir."""
+        import coupon
+        with database.db_session(TEST_DB) as conn:
+            # Geçmiş oluştur: Gemini MS 1 1.50 oranında %30 tuttu, Python ALT 1.50 oranında %80 tuttu
+            for i in range(20):
+                mid = database.save_match(conn, f"HIST_{i}", "H", "A", "Lig", "01.01.2024", "20:00")
+                database.save_result(conn, mid, ht_home=0, ht_away=0,
+                                     ft_home=2 if i < 6 else 0, ft_away=0) # 6 maçta MS 1, 20 maçın hepsinde <=3 gol (ALT)
+                database.save_prediction(conn, mid, {
+                    "best_bet": {"market": "ft", "selection": "MS 1", "odds": 1.50, "confidence": 75}
+                })
+                database.save_python_prediction(conn, mid, {
+                    "best_bet": {"market": "over_under", "selection": "ALT", "odds": 1.50, "confidence": 75}
+                })
+
+            # Yeni aday maçlar
+            m1 = database.save_match(conn, "FUT_1", "Takım A", "Takım B", "Lig", "01.01.2099", "20:00")
+            database.save_prediction(conn, m1, {
+                "predicted_score": "2-0",
+                "best_bet": {"market": "ft", "selection": "MS 1", "odds": 1.50, "confidence": 75}
+            })
+            database.save_python_prediction(conn, m1, {
+                "best_bet": {"market": "over_under", "selection": "ALT", "odds": 1.50, "confidence": 75}
+            })
+
+        # Kupon üret (veritabanı commit edildikten sonra çağrılır)
+        with mock.patch.multiple(config, MIN_MATCH_ODDS=1.30, MIN_COUPON_TOTAL_ODDS=1.10):
+            res = coupon.generate_coupon(match_count=1, today_only=False, db_path=TEST_DB)
+            self.assertTrue(res["success"], res.get("message"))
+            chosen = res["matches"][0]
+            # Kalibre puanı daha yüksek olan Python ⭐ ALT seçilmiş olmalı
+            self.assertEqual(chosen["source"], "python")
+            self.assertEqual(chosen["pick"], "python_best_bet")
+            self.assertEqual(chosen["selection"], "ALT")
+            self.assertGreater(chosen["calibrated_probability"], 65.0)
+
+    def test_candidate_filtered_out_when_below_min_odds(self):
+        """Oran kuralını (min_match_odds) geçmeyen aday elenir, geçen aday seçilir."""
+        import coupon
+        with database.db_session(TEST_DB) as conn:
+            m1 = database.save_match(conn, "FUT_LOW", "Takım A", "Takım B", "Lig", "01.01.2099", "20:00")
+            # 1. tercih 1.20 (düşük), 2. tercih 1.45 (uygun)
+            database.save_prediction(conn, m1, {
+                "predicted_score": "1-0",
+                "best_bet": {"market": "ft", "selection": "MS 1", "odds": 1.20, "confidence": 85},
+                "alt_bet": {"market": "over_under", "selection": "ALT", "odds": 1.45, "confidence": 65}
+            })
+
+        with mock.patch.multiple(config, MIN_MATCH_ODDS=1.30, MIN_COUPON_TOTAL_ODDS=1.10):
+            res = coupon.generate_coupon(match_count=1, today_only=False, db_path=TEST_DB)
+            self.assertTrue(res["success"], res.get("message"))
+            chosen = res["matches"][0]
+            self.assertEqual(chosen["pick"], "alt_bet")
+            self.assertEqual(chosen["odds"], 1.45)
+
+    def test_python_best_bet_coupon_saved_and_evaluated(self):
+        """python_best_bet kuponu kaydedilir ve maç skorları girildiğinde başarıyla sonuçlandırılır."""
+        import coupon
+        with database.db_session(TEST_DB) as conn:
+            m1 = database.save_match(conn, "CPN_PY_1", "Takım A", "Takım B", "Lig", "01.01.2099", "20:00")
+            database.save_python_prediction(conn, m1, {
+                "best_bet": {"market": "ft", "selection": "MS 1", "odds": 1.60, "confidence": 70}
+            })
+
+        # Kuponu kaydet (commit sonrası)
+        coupon_id = coupon.save_played_coupon("banko", [{"id": m1, "pick": "python_best_bet"}], db_path=TEST_DB)
+        self.assertGreater(coupon_id, 0)
+
+        with database.db_session(TEST_DB) as conn:
+            # İlk durum: pending
+            c_data = database.get_coupons(conn)
+            self.assertEqual(c_data["coupons"][0]["status"], "pending")
+
+            # Maç sonuçlandı: Takım A kazandı -> won
+            database.save_result(conn, m1, ht_home=1, ht_away=0, ft_home=2, ft_away=0)
+            c_data_won = database.get_coupons(conn)
+            self.assertEqual(c_data_won["coupons"][0]["status"], "won")
+            self.assertEqual(c_data_won["summary"]["won"], 1)
+
+    def test_win_probability_and_expected_value_in_generated_coupon(self):
+        """Üretilen kuponda win_probability ve expected_value alanları doğru hesaplanır."""
+        import coupon
+        with database.db_session(TEST_DB) as conn:
+            for i in range(2):
+                mid = database.save_match(conn, f"EV_{i}", f"Home_{i}", f"Away_{i}", "Lig", "01.01.2099", "20:00")
+                database.save_prediction(conn, mid, {
+                    "predicted_score": "1-0",
+                    "best_bet": {"market": "ft", "selection": "MS 1", "odds": 1.50, "confidence": 60}
+                })
+
+        with mock.patch.multiple(config, MIN_MATCH_ODDS=1.30, MIN_COUPON_TOTAL_ODDS=1.50):
+            res = coupon.generate_coupon(match_count=2, today_only=False, db_path=TEST_DB)
+            self.assertTrue(res["success"], res.get("message"))
+            self.assertIn("win_probability", res)
+            self.assertIn("expected_value", res)
+            # İki maç: 1.50 * 1.50 = 2.25 total_odds
+            self.assertEqual(res["total_odds"], 2.25)
+            # Kalibre olasılık ~%60 ise win_prob ~ 0.60 * 0.60 = %36.0
+            self.assertAlmostEqual(res["win_probability"], 36.0, delta=2.0)
+            # EV = win_prob / 100 * total_odds = 0.36 * 2.25 = 0.81
+            self.assertAlmostEqual(res["expected_value"], 0.81, delta=0.1)
+
+    def test_coupon_calibration_normalizes_total_points(self):
+        """Kupon kalibrasyonunda total_points için farklı sınırlar (örn. 162.5 ÜST ve 210.5 ÜST) aynı yönde ('ÜST') toplanır."""
+        import coupon
+        history = [
+            {"source": "gemini", "sport_type": "BASKETBALL", "market": "total_points", "selection": "162.5 ÜST", "odds": 1.60, "confidence": 70, "won": 1},
+            {"source": "gemini", "sport_type": "BASKETBALL", "market": "total_points", "selection": "210.5 ÜST", "odds": 1.65, "confidence": 75, "won": 1},
+            {"source": "gemini", "sport_type": "BASKETBALL", "market": "total_points", "selection": "180.5 ÜST", "odds": 1.70, "confidence": 65, "won": 0},
+        ]
+        cal = coupon.build_calibration(history)
+        # Level 1'de anahtar 'ÜST' olarak normalize edilmiş olmalı
+        l1_keys = list(cal["level_1"].keys())
+        selections = [k[3] for k in l1_keys if k[2] == "total_points"]
+        self.assertEqual(selections, ["ÜST"])
+        self.assertEqual(cal["level_1"][l1_keys[0]]["count"], 3)
+
+        # Farklı sınırlı bir aday sorgulandığında da bu kova eşleşmeli
+        prob, count = coupon.calibrated_probability(cal, "gemini", "BASKETBALL", "total_points", "225.5 ÜST", 1.65, 70.0)
+        self.assertEqual(count, 3)
+
 if __name__ == "__main__":
     unittest.main()
+

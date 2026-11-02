@@ -6,6 +6,7 @@ import database
 import data_source
 import gemini_engine
 import match_data
+import python_engine
 import rules
 import stats_sync
 
@@ -240,6 +241,8 @@ def display_prediction_card(match_info: Dict[str, Any], pred: Dict[str, Any], od
     print(f"🏆 Maç Sonu Tahmini     : {Colors.BOLD}{pred.get('predicted_ft_result')}{Colors.ENDC}")
     if basketball:
         print(f"🏀 Maç Sonu Toplam Sayı : {Colors.BOLD}{pred.get('predicted_total_points')}{Colors.ENDC}")
+        if pred.get('predicted_over_under_3'):
+            print(f"📊 Alt / Üst Tahmini    : {Colors.BOLD}{pred.get('predicted_over_under_3')}{Colors.ENDC}")
     else:
         print(f"⚽ 3 Gol Sınırı (Alt/Üst): {Colors.BOLD}{pred.get('predicted_over_under_3')}{Colors.ENDC} {Colors.DIM}(>=4 gol: ÜST, <=3 gol: ALT){Colors.ENDC}")
         print(f"🤝 Karşılıklı Gol       : {Colors.BOLD}{pred.get('predicted_kg')}{Colors.ENDC}")
@@ -275,6 +278,10 @@ def _predict_and_save(match_id: int) -> None:
     prediction = gemini_engine.generate_prediction(context, model_name=config.GEMINI_MODEL)
     with database.db_session() as conn:
         database.save_prediction(conn, match_id, prediction)
+        try:
+            python_engine.generate_python_prediction(conn, match_id)
+        except Exception:
+            pass
     display_prediction_card(context["match"], prediction, context.get("odds"))
 
 def run_single_prediction() -> None:

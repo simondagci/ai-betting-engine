@@ -6,7 +6,6 @@ from google import genai
 from google.genai import types
 from google.genai.errors import ServerError
 import config
-import nesine_api
 import rules
 
 DEFAULT_MODEL = config.GEMINI_MODEL
@@ -19,7 +18,7 @@ MAX_ODDS_ROWS = 25
 # Oran listesinde önce bu marketler gönderilir
 PRIORITY_MARKETS = ("Maç Sonucu", "İlk Yarı Sonucu", "Karşılıklı Gol", "Çifte Şans",
                     "2.5 Gol Alt/Üst", "3.5 Gol Alt/Üst", "1.5 Gol Alt/Üst",
-                    nesine_api.BASKETBALL_TOTAL_POINTS_MARKET)
+                    rules.TOTAL_POINTS_MARKET)
 
 # ==============================================================================
 # YANIT ŞEMALARI
@@ -122,6 +121,11 @@ def _format_odds(odds: List[Dict[str, Any]]) -> str:
 def _sport_type(match_context: Dict[str, Any]) -> str:
     return match_context.get("match", {}).get("sport_type", rules.FOOTBALL)
 
+def _total_points_line(match_context: Dict[str, Any]) -> Optional[float]:
+    """Basketbol Alt/Üst sınırı: maç kaydından, yoksa maçın oranlarından."""
+    line = match_context.get("match", {}).get("total_points_line")
+    return line if line is not None else rules.main_total_points_line(match_context.get("odds", []))
+
 def _best_bet_candidates(match_context: Dict[str, Any]) -> List[Dict[str, Any]]:
     """⭐ en güçlü tercih adayları: Gemini'nin kendi tahmin marketleri (MS, İY, 3 gol ALT/ÜST, KG), oran sınırı yok."""
     return rules.bet_candidates(match_context.get("odds", []), _sport_type(match_context), markets=rules.BEST_BET_MARKETS)
@@ -173,6 +177,9 @@ def _build_basketball_prompt(match_context: Dict[str, Any]) -> str:
     home_team = match_info.get("home_team", "Ev Sahibi")
     away_team = match_info.get("away_team", "Deplasman")
     data = _data_sections(match_context, score_label="Sayı")
+    line = _total_points_line(match_context)
+    line_rule = (f"- Bu maç için bültenin belirlediği Toplam Sayı Alt/Üst baremi: {line:g}. Tahmin ettiğin toplam sayı "
+                 "(predicted_total_points) bu sınırın üzerindeyse ÜST, altındaysa ALT sayılacaktır.") if line is not None else ""
 
     return f"""
 Sen profesyonel bir basketbol veri analisti, kıdemli bahis stratejisti ve yapay zeka tahmin motorusun.
@@ -208,10 +215,11 @@ Deplasman Takımı: {away_team}
 
 --- ÇOK ÖNEMLİ BASKETBOL KURALLARI ---
 - Maç sonucu uzatmalar dahildir, beraberlik YOKTUR: predicted_ft_result sadece "MS 1" veya "MS 2" olabilir.
-- Basketbolda karşılıklı gol (KG) ve Alt/Üst tahmini YAPMA (futboldaki 3 gol kuralı burada geçersizdir).
-- Bunun yerine MAÇ SONU TOPLAM SAYI tahmini yap (predicted_total_points): iki takımın maç sonundaki toplam sayısı, uzatmalar dahil.
+- Basketbolda karşılıklı gol (KG) yoktur.
+- MAÇ SONU TOPLAM SAYI tahmini yap (predicted_total_points): iki takımın maç sonundaki toplam sayısı, uzatmalar dahil.
   Takımların son maçlardaki attığı / yediği sayıları ve puan durumundaki sayı ortalamalarını dikkate al.
 - predicted_score ile predicted_total_points tutarlı olmalı (skordaki iki sayının toplamı = toplam sayı).
+{line_rule}
 
 {data["best_bet"]}
 
@@ -293,15 +301,20 @@ def _total_from_score(score: Optional[str]) -> Optional[int]:
     except (TypeError, ValueError):
         return None
 
-def finalize_basketball_prediction(prediction: Dict[str, Any]) -> Dict[str, Any]:
+def finalize_basketball_prediction(prediction: Dict[str, Any], match_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Basketbol tahminini tutarlı hale getirir: maç sonu toplam sayı, tahmini skordaki iki sayının toplamına eşitlenir
-    (skor okunamazsa modelin verdiği toplam kalır). Basketbolda Alt/Üst ve KG yoktur.
+    (skor okunamazsa modelin verdiği toplam kalır).
+    Sınır varsa predicted_over_under_3 = "ÜST" if predicted_total_points > sınır else "ALT", yoksa None.
+    predicted_kg None kalır.
     """
     score_total = _total_from_score(prediction.get("predicted_score"))
     if score_total is not None:
         prediction["predicted_total_points"] = score_total
-    prediction["predicted_over_under_3"] = None
+
+    line = _total_points_line(match_context) if match_context else None
+    total = prediction.get("predicted_total_points")
+    prediction["predicted_over_under_3"] = ("ÜST" if total > line else "ALT") if line is not None and total is not None else None
     prediction["predicted_kg"] = None
     return prediction
 
@@ -341,7 +354,7 @@ def finalize_best_bet(prediction: Dict[str, Any], match_context: Dict[str, Any])
 
 def _finalize(prediction: Dict[str, Any], match_context: Dict[str, Any]) -> Dict[str, Any]:
     if rules.is_basketball(_sport_type(match_context)):
-        finalize_basketball_prediction(prediction)
+        finalize_basketball_prediction(prediction, match_context)
     return finalize_best_bet(prediction, match_context)
 
 def generate_prediction(match_context: Dict[str, Any], model_name: str = DEFAULT_MODEL) -> Dict[str, Any]:

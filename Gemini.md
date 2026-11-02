@@ -33,12 +33,13 @@ python3 -m unittest test_app -v
 | `background_job.py` | Genel arka plan iş altyapısı `BackgroundJob`: aynı anda tek iş, paralel worker'lar (ortak kuyruk), ilerleme / kalan süre, iptal, art arda hata sınırı, `StopJob` |
 | `stats_sync.py` | Toplu istatistik işi (bülten sonrası otomatik başlar). Web'de arka plan thread'i, terminalde ilerleme çubuğu. Yarıda kalırsa kalan maçlar sonraki çalıştırmada işlenir |
 | `results_sync.py` | Toplu maç sonuçları işi: tamamlanmış ama skoru olmayan maçların skorlarını arka planda çeker (`/api/admin/jobs/results`). Skoru olan maçlar atlanır ve tekrar güncellenmez |
-| `coupon.py` | **Kupon motoru:** analiz edilmiş, henüz başlamamış maçlardan strateji (banko / value / surprise) ve lig isabeti ağırlığıyla kupon üretir (`/api/coupon/generate`). Oran kuralları **sabit değil**: her üretimde `database.get_coupon_odds_settings` ile Ayarlar'dan (yoksa `.env` `MIN_MATCH_ODDS` / `MIN_COUPON_TOTAL_ODDS`) okunur. Maç tercihi ⭐, oranı eşiğin altındaysa 2. tercih. "Oynadım, Kaydet" ile kupon `coupons` / `coupon_items`'a yazılır (`save_played_coupon`: tercih ve oran istemciden değil maçın son tahmininden alınır) |
+| `coupon.py` | **Kupon motoru:** analiz edilmiş, henüz başlamamış maçlardan strateji (banko / value / surprise) ve lig isabeti ağırlığıyla kupon üretir (`/api/coupon/generate`). Tercih olasılıkları şişkin model güveninden değil, geçmiş isabet verisi üzerinden Bayesyen hiyerarşik daraltma (shrinkage) ile kalibre edilir. Adaylar: Gemini ⭐, Gemini 2. tercih, Python ⭐, Python 2. tercih arasından min oran eşiğini (`MIN_MATCH_ODDS`) geçen ve kalibre puanı en yüksek olan seçilir. Çıktıda kupon tutma olasılığı (`win_probability`) ve beklenen değer (`expected_value`) hesaplanır. "Oynadım, Kaydet" ile kupon `coupons` / `coupon_items`'a yazılır (`save_played_coupon`: tercih ve oran istemciden değil maçın tahmininden alınır) |
 | `prediction_batch.py` | "🔮 Maçları Analiz Et": bitmemiş, analiz edilmemiş, istatistikleri dolu, ligi izinli maçları `GEMINI_PARALLEL_REQUESTS` paralel istekle Gemini'ye gönderir. Gemini kapatılırsa (`StopJob`) veya art arda 5 hata olursa durur |
 | `data_source.py` | Aktif veri kaynağı seçimi (`DATA_SOURCE=iddaa\|nesine`). `app.py` / `web_server.py` kaynak modüllerini **doğrudan değil bunun üzerinden** çağırır |
 | `iddaa_api.py` | iddaa.com bülten / istatistik / sonuç çağrıları; veriyi Nesine bülten formatına ve uygulama istatistik formatına dönüştürür |
 | `nesine_api.py` | Nesine HTTP çağrıları, market sınıflandırma (`_classify_market`, basketbol için `_classify_basketball_market`), `extract_odds_from_event`, `_clean_nesine_data_json` |
 | `database.py` | SQLite şeması (`init_db` + `ALTER TABLE` migration'ları), `db_session`, tüm sorgular, saat dilimi dönüşümü, 150 dk kuralı, doğruluk hesabı, `settings` tablosu |
+| `python_engine.py` | **Yerel Poisson xG + Random Forest tahmin motoru:** Gemini'den %100 bağımsız (`python_predictions` tablosu). Bitmiş maçlar **walk-forward** ile tahmin edilir: tarih sırasına dizilir, her dilim yalnızca kendinden önce oynanmış maçlarla eğitilir (ilk maçlar saf Poisson). Yedek ortalamalar da yalnızca maçtan önceki sonuçlardan gelir (`_ResultsIndex`). Güven yüzdesi ham model olasılığıdır (ek puan / alt sınır yok); İY olasılığı Poisson İY matrisinden gelir, olasılığı olmayan market aday olmaz. Veri toplu sorgularla yüklenir (`_load_contexts`, `_load_results_index`), döngüde SQL yok |
 | `gemini_engine.py` | Prompt oluşturma (`build_prompt`, `_build_basketball_prompt`), Pydantic şemalar (`MatchPrediction`, `BasketballPrediction`), Gemini çağrısı + retry/fallback + zaman aşımı, `finalize_best_bet` |
 | `app.py` | Terminal menüsü — `MENU_ITEMS` listesi (etiket, fonksiyon) + `main_menu()` |
 | `web_server.py` | Flask dashboard + `/api/...` JSON endpoint'leri (bkz. §7) |
@@ -74,10 +75,11 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
   `rules.OVER_UNDER_GOAL_LIMIT`, `MatchPrediction.predicted_over_under_3`. Sonuç/gol hesabını başka yerde yeniden yazma, `rules.py`'yi kullan.
 - **KG VAR:** her iki takım da ≥1 gol.
 - **Basketbol farklıdır:**
-  - KG ve Alt/Üst yok; MS beraberliksiz (uzatmalar dahil: MS 1 / MS 2); İY 1 / İY 0 / İY 2.
-  - Gemini **Maç Sonu Toplam Sayı** (`predicted_total_points`) tahmin eder; tahmini skordaki iki sayının toplamına eşitlenir.
+  - KG yoktur; MS beraberliksiz (uzatmalar dahil: MS 1 / MS 2); İY 1 / İY 0 / İY 2.
+  - Maç kaydında `matches.total_points_line` (iddaa "Toplam Sayı Alt/Üst" baremi) tutulur; Gemini ve Python bu sınıra göre `predicted_over_under_3` ("ALT"/"ÜST") ve maç sonu toplam sayı (`predicted_total_points`) tahmin eder.
+  - `total_points` marketi (örn. "162.5 ÜST") ⭐ / 2. tercih / kupon adayı olabilir.
   - Skor girişinde üst sınır yok (futbolda 0–99). Basketbol sonuçlarına 3 gol / KG yazılmaz (NULL).
-  - Spora göre dallanma `rules.is_basketball(sport_type)` ile; `evaluate_prediction` `sport_type` parametresi alır.
+  - Spora göre dallanma `rules.is_basketball(sport_type)` ile; `evaluate_prediction` spora göre Alt/Üst değerlendirmesini futbol için 3.5 gol, basketbol için `total_points_line` üzerinden yapar.
   - Basketbol oranları `nesine_api._classify_basketball_market` ile etiketlenir (futbol sınıflandırıcısı yanlış etiketler).
 - **Spor ayrımı:** bülten `TYPE "1"` = futbol, `"2"` = basketbol, `"-1"` = uzun vadeli (atlanır). Skor tipi futbolda `FT`, basketbolda `Current`; ilk yarı her ikisinde `HT`.
 - **150 dakika kuralı:** başlama saatinden `MATCH_COMPLETION_DELAY_MINUTES` (150) dk sonra `match_completed = 1`, `status = 'COMPLETED'`.
@@ -87,7 +89,7 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
   - Gemini'ye istek atan her web endpoint'i `_gemini_disabled_response` ile kontrol eder (403 `GEMINI_DISABLED`).
   - Tek maç analizi: lig izni kapalıysa 409 `LEAGUE_DISABLED` (`{"enable_league": true}` ile izin açılıp analiz yapılır); istatistik eksikse 409 `MISSING_STATS`.
 - **⭐ En güçlü tercih + 2. tercih:**
-  - ⭐ `best_bet_*`: Gemini'nin kendi tahmin marketlerinden (futbol: MS, İY, 3 gol ALT/ÜST = 3.5 baremi, KG; basketbol: MS, İY)
+  - ⭐ `best_bet_*`: Gemini'nin kendi tahmin marketlerinden (futbol: MS, İY, 3 gol ALT/ÜST = 3.5 baremi, KG; basketbol: MS, İY, Toplam Sayı Alt/Üst)
     gerçekleşeceğine **en çok güvendiği** seçim. Oran sınırı yoktur (1.10'luk favori olabilir). Çifte Şans ⭐ olamaz.
   - 2. tercih `alt_bet_*`: ⭐ seçimin oranı `MIN_BEST_BET_ODDS` (1.30) **altındaysa**, oranı eşik ve üstü seçenekler (Çifte Şans dahil)
     arasından Gemini'nin en çok güvendiği seçim + olasılığı (`alt_bet_confidence`). ⭐ oranı eşik ve üstüyse 2. tercih kaydedilmez.
@@ -96,10 +98,14 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
   - İkisi de tahminden farklı olabilir; değerlendirme `rules.selection_won` ile **seçimin kendisine** göre yapılır
     (`evaluation["best_bet"]`, `evaluation["alt_bet"]`). Oranlar `best_bet_odds` / `alt_bet_odds`'a yazılır.
     Lig Yönetimi'nde ⭐ İsabet ve 2. Tercih İsabet ayrı sütunlardır; listede "2. Tercih" ve "2. Tercih %" sütunları vardır.
+- **Gemini ve Python isabeti adil kıyaslanır:** Tercih İsabetleri sekmelerindeki "Ortak Maçlarda ⭐ İsabet" kartı yalnızca ikisinin de tahmini ve sonucu olan maçları sayar (`database.calculate_common_prediction_accuracy`). Python'un genel isabeti yalnızca kendi maç kümesini gösterir.
 - **Kupon oran kuralları dinamiktir:** maç başına min oran (`MIN_MATCH_ODDS`) ve min toplam kupon oranı (`MIN_COUPON_TOTAL_ODDS`)
   `settings` tablosundan (Lig Yönetimi › Ayarlar), yoksa `.env`'den okunur: `database.get_coupon_odds_settings`. Kodda veya arayüzde
-  1.30 / 2.00 gibi değerleri **sabit yazma**; kupon isteği bu kuralları parametreyle ezemez. Maç tercihi ⭐, oranı eşiğin altındaysa
-  2. tercih; ikisi de altındaysa maç kupona girmez. Başlamış maçlar kupona girmez. Lig isabeti önbelleğe alınmaz.
+  1.30 / 2.00 gibi değerleri **sabit yazma**; kupon isteği bu kuralları parametreyle ezemez.
+- **Kupon motoru kalibre olasılık kullanır:** Maç tercihi Gemini'nin şişkin güven yüzdesine göre değil, geçmiş gerçekleşen isabet üzerinden
+  Empirical Bayes / Hiyerarşik daraltma (shrinkage) ile kalibre edilen olasılığa göre seçilir. Adaylar: Gemini ⭐, Gemini 2. tercih, Python ⭐,
+  Python 2. tercih arasından min oran eşiğini (`MIN_MATCH_ODDS`) geçen ve kalibre puanı en yüksek olanıdır. Başlamış maçlar kupona girmez.
+  Lig isabeti önbelleğe alınmaz (`database.get_league_prediction_stats` ve `database.get_league_python_prediction_stats`).
 - **Oynanan kuponlar:** "💾 Oynadım, Kaydet" kuponu `coupons` + `coupon_items` tablolarına yazar. Tuttu / yattı durumu **saklanmaz**;
   `database.get_coupons` her okumada tercihleri `rules.selection_won` ile maç sonucundan hesaplar (bir tercih yattı → `lost`,
   hepsi tuttu → `won`, sonucu bekleyen var → `pending`). Skor girilince kupon kendiliğinden değerlendirilir; ayrı bir değerlendirme işi yazma.
@@ -142,7 +148,7 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
 | :--- | :--- |
 | `teams` | `id`, `name`, `sport_type` |
 | `leagues` | `id`, `name`, `sport_type`, `gemini_analysis` (0/1), `external_id` (kaynak lig ID'si, eşleştirme anahtarı) |
-| `matches` | `id`, `code` (bülten maç kodu), `home_team_id`, `away_team_id`, `league_id`, `match_date` (`DD.MM.YYYY`), `match_time`, `sport_type`, `status`, `match_completed` (0/1) |
+| `matches` | `id`, `code` (bülten maç kodu), `home_team_id`, `away_team_id`, `league_id`, `match_date` (`DD.MM.YYYY`), `match_time`, `sport_type`, `status`, `match_completed` (0/1), `total_points_line` (iddaa "Toplam Sayı Alt/Üst" baremi, REAL, futbolda NULL) |
 | `odds` | `id`, `match_id`, `market_type`, `market_name`, `option_name`, `odds_value` |
 | `match_stats` | `id`, `match_id` (UNIQUE), `h2h_json`, `home_last_matches_json`, `away_last_matches_json`, `missing_players_json`, `league_table_json`, `updated_at` |
 | `predictions` | `id`, `match_id`, `predicted_ht_result`, `predicted_ht_score`, `predicted_ft_result`, `predicted_over_under_3`, `predicted_kg`, `predicted_score`, `confidence_score`, `ai_analysis_summary`, `predicted_total_points` (basketbol), `best_bet_market`, `best_bet_selection`, `best_bet_confidence`, `best_bet_reason`, `best_bet_odds`, `alt_bet_market`, `alt_bet_selection`, `alt_bet_confidence`, `alt_bet_odds`, `over_under_line`, `avoid_bets_json` (kullanılmıyor), `created_at` |
@@ -150,6 +156,7 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
 | `settings` | `key` (PK), `value`, `updated_at` — panelden kaydedilen Gemini anahtarı ve kupon oran kuralları (`min_match_odds`, `min_coupon_odds`) |
 | `coupons` | `id`, `strategy`, `total_odds`, `created_at` — oynanan kuponlar |
 | `coupon_items` | `id`, `coupon_id`, `match_id`, `pick` (`best_bet` / `alt_bet`), `market`, `selection`, `odds`, `confidence` |
+| `python_predictions` | `id`, `match_id` (UNIQUE), `model_type`, `predicted_ht_result`, `predicted_ht_score`, `predicted_ft_result`, `predicted_score`, `predicted_over_under_3`, `predicted_kg`, `home_win_prob`, `draw_prob`, `away_win_prob`, `over_3_prob`, `kg_prob`, `expected_home_goals`, `expected_away_goals`, `confidence_score`, `created_at` — yerel Python Poisson/xG tahminleri (Gemini'den %100 izole) |
 
 `CREATE TABLE IF NOT EXISTS` mevcut tabloyu güncellemez: yeni sütun için `init_db` içine `ALTER TABLE` migration ekle.
 `betting_engine.db` gerçek veri içerir.
@@ -243,7 +250,7 @@ Toplam gol >= 4 ise "ÜST", <= 3 ise "ALT".
 `best_bet_confidence`, `best_bet_reason`, `alt_bet_selection`, `alt_bet_confidence`.
 
 **Basketbol (`BasketballPrediction`):** rol "basketbol veri analisti"; 3 gol kuralı ve KG yok; `predicted_total_points`
-istenir; MS beraberliksiz; ⭐ ve 2. tercih adayları sadece MS ve İY.
+istenir ve sınır varsa Alt/Üst türetilir; MS beraberliksiz; ⭐ ve 2. tercih adayları MS, İY ve Toplam Sayı Alt/Üst (`total_points`).
 
 ---
 
