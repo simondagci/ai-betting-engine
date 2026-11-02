@@ -190,6 +190,8 @@
                                     <th>Karşılaşma</th>
                                     <th>Lig</th>
                                     <th>Önerilen Tercih</th>
+                                    <th>🔮 Gemini 1. Tercih</th>
+                                    <th>⚡ Python 1. Tercih</th>
                                     <th class="num">Oran</th>
                                     <th class="num">Kalibre Olasılık</th>
                                     <th>Lig AI Başarısı (Ağırlık)</th>
@@ -1629,6 +1631,18 @@
                     ? '<span class="badge" style="background:#e0f2fe; color:#0369a1; font-size:10px; padding:1px 4px;">⚡ Python</span>'
                     : '<span class="badge" style="background:#f3e8ff; color:#7e22ce; font-size:10px; padding:1px 4px;">🔮 Gemini</span>';
 
+                // Gemini 1. Tercih ve Oranı
+                const gBet = m.gemini_best_bet;
+                const gCell = gBet && gBet.selection
+                    ? `<div><span class="badge badge-gold" style="font-weight:700;">⭐ ${esc(gBet.selection)}</span> <strong style="color:var(--brand); margin-left:4px;">${Number(gBet.odds).toFixed(2)}</strong></div>`
+                    : '<span class="muted">—</span>';
+
+                // Python 1. Tercih ve Oranı
+                const pBet = m.python_best_bet;
+                const pCell = pBet && pBet.selection
+                    ? `<div><span class="badge badge-gold" style="font-weight:700;">⭐ ${esc(pBet.selection)}</span> <strong style="color:var(--brand); margin-left:4px;">${Number(pBet.odds).toFixed(2)}</strong></div>`
+                    : '<span class="muted">—</span>';
+
                 const calibHtml = m.calibrated_probability !== undefined
                     ? `<strong>%${esc(m.calibrated_probability)}</strong><div class="cell-sub" style="font-size:10px;">(Güven: %${esc(m.confidence)}${m.calibration_samples ? ` · n=${esc(m.calibration_samples)}` : ''})</div>`
                     : `<strong>%${esc(m.confidence)}</strong>`;
@@ -1649,6 +1663,8 @@
                             </span>
                             <div class="cell-sub" style="margin-top:2px;">${sourceBadge} ${esc(m.pick_label)}</div>
                         </td>
+                        <td>${gCell}</td>
+                        <td>${pCell}</td>
                         <td class="num" style="font-weight:800; color:var(--brand);">${Number(m.odds).toFixed(2)}</td>
                         <td class="num">${calibHtml}</td>
                         <td>${leagueBadge}</td>

@@ -196,6 +196,8 @@ def _failure(message: str, candidates_count: int, odds_rules: Dict[str, Any]) ->
 
 def _format_match(item: Dict[str, Any]) -> Dict[str, Any]:
     m, pick = item["match"], item["pick"]
+    py_pred = m.get("python_prediction") or {}
+    py_bb = py_pred.get("best_bet") or {}
     return {
         "id": m["id"], "code": m["code"], "home_team": m["home_team"], "away_team": m["away_team"],
         "league_name": m["league_name"], "local_date": m["local_date"], "local_time": m["local_time"],
@@ -205,6 +207,18 @@ def _format_match(item: Dict[str, Any]) -> Dict[str, Any]:
         "predicted_score": m.get("predicted_score"), "coupon_score": pick["score"], "played": m["played"],
         "league_accuracy": pick["league_accuracy"], "league_evaluated": pick["league_evaluated"],
         "league_note": pick["league_note"], "ai_reason": pick["ai_reason"],
+        "gemini_best_bet": {
+            "selection": m.get("best_bet_selection"),
+            "odds": m.get("best_bet_odds"),
+            "confidence": m.get("best_bet_confidence"),
+            "market": m.get("best_bet_market")
+        } if m.get("best_bet_selection") else None,
+        "python_best_bet": {
+            "selection": py_bb.get("selection"),
+            "odds": py_bb.get("odds"),
+            "confidence": py_bb.get("confidence"),
+            "market": py_bb.get("market")
+        } if py_bb.get("selection") else None,
     }
 
 def generate_coupon(match_count: int = 3, today_only: bool = True, strategy: str = STRATEGY_BANKO,
