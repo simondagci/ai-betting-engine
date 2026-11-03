@@ -60,6 +60,11 @@ def match_detail_page(match_id: int):
     """Maç kayıt (detay) sayfasını döner. Veriler sayfa içinden /api/matches/<id>/details ile yüklenir."""
     return render_template("match_detail.html", match_id=match_id)
 
+@app.route("/leagues/<int:league_id>")
+def league_detail_page(league_id: int):
+    """Lig detay sayfasını döner (Salesforce Lightning tasarımı, oynanmamış ve bitmiş maçlar ayrı)."""
+    return render_template("league_detail.html", league_id=league_id)
+
 @app.route("/api/matches/unfinished")
 def api_unfinished_matches():
     """Tamamlanmamış (match_completed = 0) maçları JSON olarak döner."""
@@ -436,6 +441,19 @@ def api_admin_leagues():
         "count": len(leagues),
         "leagues": leagues
     })
+
+@app.route("/api/leagues/<int:league_id>/details")
+def api_league_details(league_id: int):
+    """Belirtilen lige ait detayları, istatistikleri, oynanmamış ve bitmiş maçları döner."""
+    with database.db_session() as conn:
+        ctx = database.get_league_detail_context(conn, league_id)
+        if not ctx:
+            return jsonify({"success": False, "error": "Lig bulunamadı."}), 404
+        ctx["settings"] = {
+            "gemini_enabled": database.is_gemini_enabled(conn),
+            "require_league_approval": config.REQUIRE_LEAGUE_APPROVAL
+        }
+        return jsonify({"success": True, "data": ctx})
 
 @app.route("/api/admin/leagues/<int:league_id>/toggle", methods=["POST"])
 def api_toggle_league(league_id: int):

@@ -194,10 +194,28 @@ def select_combination(scored: List[Dict[str, Any]], match_count: int, min_total
 def _failure(message: str, candidates_count: int, odds_rules: Dict[str, Any]) -> Dict[str, Any]:
     return {"success": False, "message": message, "candidates_count": candidates_count, "odds_rules": odds_rules, "matches": []}
 
-def _format_match(item: Dict[str, Any]) -> Dict[str, Any]:
+def _format_match(item: Dict[str, Any], calibration: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     m, pick = item["match"], item["pick"]
     py_pred = m.get("python_prediction") or {}
     py_bb = py_pred.get("best_bet") or {}
+    sport = m.get("sport_type") or rules.FOOTBALL
+
+    g_cal_prob = None
+    if m.get("best_bet_selection") and m.get("best_bet_odds"):
+        g_cal_prob, _ = calibrated_probability(
+            calibration, "gemini", sport, m.get("best_bet_market") or "",
+            m.get("best_bet_selection") or "", float(m.get("best_bet_odds")),
+            float(m.get("best_bet_confidence") or 65.0)
+        )
+
+    p_cal_prob = None
+    if py_bb.get("selection") and py_bb.get("odds"):
+        p_cal_prob, _ = calibrated_probability(
+            calibration, "python", sport, py_bb.get("market") or "",
+            py_bb.get("selection") or "", float(py_bb.get("odds")),
+            float(py_bb.get("confidence") or 65.0)
+        )
+
     return {
         "id": m["id"], "code": m["code"], "home_team": m["home_team"], "away_team": m["away_team"],
         "league_name": m["league_name"], "local_date": m["local_date"], "local_time": m["local_time"],
@@ -211,12 +229,14 @@ def _format_match(item: Dict[str, Any]) -> Dict[str, Any]:
             "selection": m.get("best_bet_selection"),
             "odds": m.get("best_bet_odds"),
             "confidence": m.get("best_bet_confidence"),
+            "calibrated_probability": g_cal_prob if g_cal_prob is not None else m.get("best_bet_confidence"),
             "market": m.get("best_bet_market")
         } if m.get("best_bet_selection") else None,
         "python_best_bet": {
             "selection": py_bb.get("selection"),
             "odds": py_bb.get("odds"),
             "confidence": py_bb.get("confidence"),
+            "calibrated_probability": p_cal_prob if p_cal_prob is not None else py_bb.get("confidence"),
             "market": py_bb.get("market")
         } if py_bb.get("selection") else None,
     }
@@ -267,7 +287,7 @@ def generate_coupon(match_count: int = 3, today_only: bool = True, strategy: str
         return _failure(f"{len(scored)} uygun maçtan toplam oranı en az {min_total_odds:.2f} olan {match_count} maçlık kupon "
                         "oluşturulamadı. Maç sayısını artırın veya stratejiyi değiştirin.", len(matches), odds_rules)
 
-    formatted = [_format_match(item) for item in selected]
+    formatted = [_format_match(item, calibration) for item in selected]
     total_odds = round(_total_odds(tuple(selected)), 2)
     win_probability = round(math.prod(m["calibrated_probability"] / 100.0 for m in formatted) * 100.0, 1)
 

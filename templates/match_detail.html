@@ -91,7 +91,7 @@
                     </div>
                     <div class="highlights">
                         ${highlight('Maç Kodu', esc(m.code))}
-                        ${highlight('Lig', esc(m.league_name || '—'))}
+                        ${highlight('Lig', m.league_id ? `<a class="record-link" href="/leagues/${m.league_id}"><strong>${esc(m.league_name || '—')}</strong></a>` : esc(m.league_name || '—'))}
                         ${highlight('Tarih (DE)', `${esc(m.local_date)} <strong>${esc(m.local_time)}</strong>`)}
                         ${isBasketball(m.sport_type) && m.total_points_line ? highlight('Alt/Üst Sınırı', `<strong>${esc(m.total_points_line)}</strong>`) : ''}
                         ${highlight('Türkiye Saati', `${esc(m.tr_date)} ${esc(m.tr_time)}`)}

@@ -42,10 +42,10 @@ class MatchPrediction(BaseModel):
     alt_bet_confidence: int = Field(description="2. tercihin gerçekleşme olasılığı (1-100); 'YOK' ise 0")
 
 class BasketballPrediction(BaseModel):
-    """Basketbol tahmini: beraberlik, karşılıklı gol ve Alt/Üst yoktur; bunun yerine maç sonu toplam sayı tahmin edilir."""
+    """Basketbol tahmini: beraberlik ve karşılıklı gol yoktur; maç sonu toplam sayı ve Alt/Üst tahmin edilir."""
     analysis_summary: str = Field(description="3-4 cümlelik Türkçe detaylı taktiksel analiz ve değerlendirme")
-    predicted_ht_result: str = Field(description="İlk Yarı Tahmini: İY 1, İY 0 veya İY 2")
-    predicted_ht_score: str = Field(description="Tahmini İLK YARI skoru (Örn: '42-38', '45-45')")
+    predicted_ht_result: str = Field(description="İlk Yarı Tahmini (beraberlik yok): İY 1 veya İY 2")
+    predicted_ht_score: str = Field(description="Tahmini İLK YARI skoru (Örn: '42-38', '48-44')")
     predicted_ft_result: str = Field(description="Maç Sonu Tahmini (uzatmalar dahil, beraberlik yok): MS 1 veya MS 2")
     predicted_score: str = Field(description="Tahmini maç skoru, uzatmalar dahil (Örn: '112-105')")
     predicted_total_points: int = Field(description="Maç Sonu Toplam Sayı tahmini: iki takımın sayılarının toplamı, uzatmalar dahil (Örn: 217)")
@@ -214,7 +214,7 @@ Deplasman Takımı: {away_team}
 {data["missing"]}
 
 --- ÇOK ÖNEMLİ BASKETBOL KURALLARI ---
-- Maç sonucu uzatmalar dahildir, beraberlik YOKTUR: predicted_ft_result sadece "MS 1" veya "MS 2" olabilir.
+- Basketbolda maç sonucu ve ilk yarıda beraberlik (0) YOKTUR: predicted_ft_result sadece "MS 1" veya "MS 2", predicted_ht_result sadece "İY 1" veya "İY 2" olabilir.
 - Basketbolda karşılıklı gol (KG) yoktur.
 - MAÇ SONU TOPLAM SAYI tahmini yap (predicted_total_points): iki takımın maç sonundaki toplam sayısı, uzatmalar dahil.
   Takımların son maçlardaki attığı / yediği sayıları ve puan durumundaki sayı ortalamalarını dikkate al.

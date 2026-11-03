@@ -560,6 +560,43 @@ class TestWebServer(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertIn(f"const MATCH_ID = {self.match_id};".encode(), res.data)
 
+        # Lig detay sayfası render testi
+        res_lg = self.client.get("/leagues/1")
+        self.assertEqual(res_lg.status_code, 200)
+        self.assertIn(b"const LEAGUE_ID = 1;", res_lg.data)
+
+    def test_api_league_details_flow(self):
+        with database.db_session(TEST_DB) as conn:
+            # 1 bitmemiş maç, 1 bitmiş maç ekle
+            m_unf = database.save_match(conn, "LG_UNF", "A", "B", "Detay Ligi", "01.01.2099", "20:00")
+            m_comp = database.save_match(conn, "LG_COMP", "C", "D", "Detay Ligi", "01.01.2024", "20:00")
+            lg_row = conn.execute("SELECT league_id FROM matches WHERE id = ?", (m_unf,)).fetchone()
+            league_id = lg_row["league_id"]
+
+            database.save_prediction(conn, m_comp, self._prediction("2-0"))
+            database.save_python_prediction(conn, m_comp, {
+                "predicted_ft_result": "MS 1", "predicted_score": "2-0",
+                "best_bet": {"market": "ft", "selection": "MS 1", "odds": 1.50, "confidence": 75}
+            })
+            database.save_result(conn, m_comp, ht_home=1, ht_away=0, ft_home=2, ft_away=0)
+
+        # 1. Var olan lig için 200 ve doğru ayrışma
+        res = self.client.get(f"/api/leagues/{league_id}/details")
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()["data"]
+        self.assertEqual(data["league"]["name"], "Detay Ligi")
+        self.assertEqual(data["stats"]["total_matches"], 2)
+        self.assertEqual(data["stats"]["unfinished_matches"], 1)
+        self.assertEqual(data["stats"]["completed_matches"], 1)
+        self.assertEqual(len(data["unfinished_matches"]), 1)
+        self.assertEqual(len(data["completed_matches"]), 1)
+        # Biten maçta değerlendirme otomatik yapılmış olmalı
+        self.assertTrue(data["completed_matches"][0]["is_prediction_correct"])
+        self.assertTrue(data["completed_matches"][0]["python_prediction"]["is_prediction_correct"])
+
+        # 2. Var olmayan lig için 404
+        self.assertEqual(self.client.get("/api/leagues/999999/details").status_code, 404)
+
     def test_list_shows_match_once_with_latest_prediction(self):
         with database.db_session(TEST_DB) as conn:
             database.save_prediction(conn, self.match_id, self._prediction("1-0"))

@@ -139,6 +139,8 @@ def bet_candidates(odds: List[Dict[str, Any]], sport_type: str = FOOTBALL, min_o
             continue
         market_name, options, market_label = BET_OPTIONS[key]
         for option, label in options.items():
+            if basketball and label in ("MS 0", "İY 0"):
+                continue
             value = by_market_option.get((market_name, option))
             if value and value >= min_odds:
                 candidates.append({"market": key, "selection": label, "market_label": market_label, "odds": value})

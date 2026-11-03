@@ -193,9 +193,10 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
 
 | Metot | Yol | Açıklama |
 | :--- | :--- | :--- |
-| GET | `/`, `/matches/<id>` | Liste ve maç detay sayfaları |
+| GET | `/`, `/matches/<id>`, `/leagues/<id>` | Liste, maç detay ve lig detay sayfaları |
 | GET | `/api/matches/unfinished`, `/api/matches/completed` | Maç listeleri (en son tahminle) |
 | GET | `/api/matches/<id>/details` | Maç, oranlar, istatistik, tahminler, sonuç, değerlendirme, ayarlar |
+| GET | `/api/leagues/<id>/details` | Lig detayları, istatistikler, oynanmamış ve bitmiş maçlar |
 | POST | `/api/matches/<id>/sync_stats` | Tek maç istatistiğini veri kaynağından çek |
 | POST | `/api/matches/<id>/result` | Manuel skor girişi |
 | POST | `/api/matches/<id>/analyze` | Tek maç Gemini analizi (403 `GEMINI_DISABLED`, 409 `MISSING_STATS` / `LEAGUE_DISABLED`) |

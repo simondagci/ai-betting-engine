@@ -575,7 +575,7 @@ def calculate_basketball_probabilities(ctx: Dict[str, Any], index: _ResultsIndex
         "kg_prob": None,
         "predicted_ft_result": "MS 1" if exp_home >= exp_away else "MS 2",
         "predicted_score": f"{exp_home}-{exp_away}",
-        "predicted_ht_result": "İY 1" if exp_ht_home > exp_ht_away else ("İY 2" if exp_ht_away > exp_ht_home else "İY 0"),
+        "predicted_ht_result": "İY 1" if exp_ht_home >= exp_ht_away else "İY 2",
         "predicted_ht_score": f"{exp_ht_home}-{exp_ht_away}",
         "predicted_over_under_3": predicted_ou,
         "predicted_kg": None,

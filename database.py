@@ -1428,6 +1428,93 @@ def get_completed_matches(
 
     return filtered_matches
 
+def get_league_detail_context(conn: sqlite3.Connection, league_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Belirtilen lige ait tüm detayları (lig bilgisi, istatistikler, oynanmamış maçlar ve bitmiş maçlar) döner.
+    """
+    league_row = conn.execute(
+        "SELECT id, name, sport_type, gemini_analysis, external_id FROM leagues WHERE id = ?",
+        (league_id,)
+    ).fetchone()
+    if not league_row:
+        return None
+
+    league = dict(league_row)
+
+    # 1. Oynanmamış maçlar (match_completed = 0)
+    unf_rows = conn.execute(f"""
+        SELECT {_MATCH_COLUMNS}, {_PREDICTION_COLUMNS}, {_STATS_READY_COLUMN}
+        {_MATCH_JOINS}
+        {_LATEST_PREDICTION_JOIN}
+        LEFT JOIN match_stats ms ON ms.match_id = m.id
+        WHERE m.league_id = ? AND m.match_completed = 0
+        ORDER BY {_CHRONOLOGICAL_DATE} ASC, m.match_time ASC
+    """, (league_id,)).fetchall()
+    unfinished_matches = _enrich_matches(conn, unf_rows)
+
+    # 2. Tamamlanmış maçlar (match_completed = 1 OR status = 'COMPLETED')
+    comp_rows = conn.execute(f"""
+        SELECT {_MATCH_COLUMNS}, {_PREDICTION_COLUMNS},
+               r.ht_home_score, r.ht_away_score, r.ft_home_score, r.ft_away_score,
+               r.is_over_3_goals, r.is_kg_var, {_STATS_READY_COLUMN}
+        {_MATCH_JOINS}
+        {_LATEST_PREDICTION_JOIN}
+        LEFT JOIN results r ON m.id = r.match_id
+        LEFT JOIN match_stats ms ON ms.match_id = m.id
+        WHERE m.league_id = ? AND (m.match_completed = 1 OR m.status = 'COMPLETED')
+        ORDER BY {_CHRONOLOGICAL_DATE} DESC, m.match_time DESC
+    """, (league_id,)).fetchall()
+    completed_enriched = _enrich_matches(conn, comp_rows)
+
+    completed_matches = []
+    for m in completed_enriched:
+        # Gemini tahmini değerlendirmesi
+        if m.get("ft_home_score") is not None and m.get("predicted_ft_result"):
+            ev = rules.evaluate_prediction(m, m, m["sport_type"])
+            m["evaluation"] = ev
+            m["is_prediction_correct"] = ev["ft"]
+            m["ht_correct"] = ev["ht"]
+            m["best_bet_correct"] = ev["best_bet"]
+            m["alt_bet_correct"] = ev["alt_bet"]
+        else:
+            m["evaluation"] = None
+            m["is_prediction_correct"] = None
+            m["ht_correct"] = None
+            m["best_bet_correct"] = None
+            m["alt_bet_correct"] = None
+
+        # Python tahmini değerlendirmesi
+        py_p = m.get("python_prediction")
+        if py_p and m.get("ft_home_score") is not None:
+            py_ev = rules.evaluate_prediction(py_p, m, m["sport_type"])
+            py_p["evaluation"] = py_ev
+            py_p["is_prediction_correct"] = py_ev["ft"]
+            py_p["ht_correct"] = py_ev["ht"]
+            py_p["best_bet_correct"] = py_ev["best_bet"]
+            py_p["alt_bet_correct"] = py_ev["alt_bet"]
+
+        completed_matches.append(m)
+
+    # 3. İstatistikler
+    gem_stats = get_league_prediction_stats(conn).get(league_id)
+    py_stats = get_league_python_prediction_stats(conn).get(league_id)
+
+    stats = {
+        "total_matches": len(unfinished_matches) + len(completed_matches),
+        "unfinished_matches": len(unfinished_matches),
+        "completed_matches": len(completed_matches),
+        "analyzed_matches": sum(1 for m in unfinished_matches if m.get("predicted_score")),
+        "gemini": gem_stats,
+        "python": py_stats
+    }
+
+    return {
+        "league": league,
+        "stats": stats,
+        "unfinished_matches": unfinished_matches,
+        "completed_matches": completed_matches
+    }
+
 def search_matches(conn: sqlite3.Connection, query: str = "", status: str = "", sport_type: str = "",
                    only_active: bool = False, limit: int = 50) -> List[sqlite3.Row]:
     sql = f"SELECT {_MATCH_COLUMNS} {_MATCH_JOINS} WHERE 1=1"

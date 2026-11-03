@@ -829,8 +829,12 @@
                 </div>`;
             }
 
+            const leagueLink = m.league_id
+                ? `<a class="record-link" href="/leagues/${m.league_id}" style="color:inherit; font-weight:600;">${name}</a>`
+                : `<span style="font-weight:600;">${name}</span>`;
+
             return `<div class="truncate" style="max-width:140px;" title="${esc(m.league_name || '')}">
-                <span style="font-weight:600;">${name}</span>
+                ${leagueLink}
                 ${badge}
             </div>`;
         }
@@ -1386,7 +1390,7 @@
             body.innerHTML = rows.map(l => `
                 <tr>
                     <td class="muted">${l.id}</td>
-                    <td class="truncate" style="max-width:320px;" title="${esc(l.name)}"><strong>${esc(l.name)}</strong></td>
+                    <td class="truncate" style="max-width:320px;" title="${esc(l.name)}"><a class="record-link" href="/leagues/${l.id}"><strong>${esc(l.name)}</strong></a></td>
                     <td>${sportLabel(l.sport_type)}</td>
                     <td class="num">${l.total_matches}</td>
                     <td class="num"><strong>${l.unfinished_matches}</strong></td>
@@ -1631,16 +1635,20 @@
                     ? '<span class="badge" style="background:#e0f2fe; color:#0369a1; font-size:10px; padding:1px 4px;">⚡ Python</span>'
                     : '<span class="badge" style="background:#f3e8ff; color:#7e22ce; font-size:10px; padding:1px 4px;">🔮 Gemini</span>';
 
-                // Gemini 1. Tercih ve Oranı
+                // Gemini 1. Tercih ve Tutma/İsabet Oranı
                 const gBet = m.gemini_best_bet;
+                const gAcc = gBet ? (gBet.calibrated_probability !== undefined && gBet.calibrated_probability !== null ? gBet.calibrated_probability : gBet.confidence) : null;
                 const gCell = gBet && gBet.selection
-                    ? `<div><span class="badge badge-gold" style="font-weight:700;">⭐ ${esc(gBet.selection)}</span> <strong style="color:var(--brand); margin-left:4px;">${Number(gBet.odds).toFixed(2)}</strong></div>`
+                    ? `<div><span class="badge badge-gold" style="font-weight:700;">⭐ ${esc(gBet.selection)}</span> <strong style="color:var(--brand); margin-left:4px;">${Number(gBet.odds).toFixed(2)}</strong></div>
+                       <div class="cell-sub" style="font-size:11px; margin-top:2px;">Tutma: <strong style="color:var(--text);">${gAcc ? '%' + esc(gAcc) : '—'}</strong></div>`
                     : '<span class="muted">—</span>';
 
-                // Python 1. Tercih ve Oranı
+                // Python 1. Tercih ve Tutma/İsabet Oranı
                 const pBet = m.python_best_bet;
+                const pAcc = pBet ? (pBet.calibrated_probability !== undefined && pBet.calibrated_probability !== null ? pBet.calibrated_probability : pBet.confidence) : null;
                 const pCell = pBet && pBet.selection
-                    ? `<div><span class="badge badge-gold" style="font-weight:700;">⭐ ${esc(pBet.selection)}</span> <strong style="color:var(--brand); margin-left:4px;">${Number(pBet.odds).toFixed(2)}</strong></div>`
+                    ? `<div><span class="badge badge-gold" style="font-weight:700;">⭐ ${esc(pBet.selection)}</span> <strong style="color:var(--brand); margin-left:4px;">${Number(pBet.odds).toFixed(2)}</strong></div>
+                       <div class="cell-sub" style="font-size:11px; margin-top:2px;">Tutma: <strong style="color:var(--text);">${pAcc ? '%' + esc(pAcc) : '—'}</strong></div>`
                     : '<span class="muted">—</span>';
 
                 const calibHtml = m.calibrated_probability !== undefined
@@ -1936,7 +1944,9 @@
                 return `
                     <tr>
                         <td class="truncate" style="max-width:320px;" title="${esc(l.name)}">
-                            <strong>${isBasketball(l.sport_type) ? '🏀 ' : '⚽ '}${esc(l.name)}</strong>
+                            <a class="record-link" href="/leagues/${l.id}">
+                                <strong>${isBasketball(l.sport_type) ? '🏀 ' : '⚽ '}${esc(l.name)}</strong>
+                            </a>
                         </td>
                         <td>${sportLabel(l.sport_type)}</td>
                         <td class="num"><strong>${l.evaluated || 0}</strong></td>
