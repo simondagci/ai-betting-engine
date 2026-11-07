@@ -832,7 +832,7 @@ class TestPrompt(unittest.TestCase):
                  "score": "2-1", "ht_score": "1-0", "result": "G"} for i in range(n)]
 
     def test_prompt_contains_full_history_table_and_priority_odds(self):
-        odds = [{"market_name": f"Özel Market {i}", "option_name": "X", "odds_value": 9.0} for i in range(30)]
+        odds = [{"market_name": f"Özel Market {i}", "option_name": "X", "odds_value": 9.0} for i in range(120)]
         odds.append({"market_name": "Maç Sonucu", "option_name": "MS 1", "odds_value": 1.62})
         ctx = {
             "match": {"home_team": "Ev FK", "away_team": "Dep FK", "league_name": "1. Lig"},
@@ -1092,34 +1092,29 @@ class TestBestBet(unittest.TestCase):
         for market, selection, expected in cases:
             self.assertEqual(rules.selection_won(market, selection, result), expected, (market, selection))
 
-    def test_prompt_lists_all_candidates_with_alt_bet_rule(self):
+    def test_prompt_lists_only_candidates_above_min_odds(self):
         with mock.patch.object(config, "MIN_BEST_BET_ODDS", 1.30):
             prompt = gemini_engine.build_prompt(self._ctx())
         self.assertIn("--- EN GÜÇLÜ TERCİH (best_bet) VE 2. TERCİH (alt_bet) ---", prompt)
-        self.assertIn("- MS 1 (Maç Sonu) | Oran 1.10 | Piyasa olasılığı %91", prompt)   # düşük oranlı seçenekler de listelenir
+        self.assertNotIn("- MS 1 (Maç Sonu) | Oran 1.10", prompt)   # eşiğin altındaki favori ⭐ adayı değil
         self.assertIn("- KG VAR (Karşılıklı Gol) | Oran 1.85 | Piyasa olasılığı %54", prompt)
-        self.assertIn("- X-2 (Çifte Şans) | Oran 5.20", prompt)
-        self.assertIn("best_bet seçeneğinin oranı 1.30 altındaysa", prompt)
+        self.assertNotIn("- X-2 (Çifte Şans)", prompt)   # Çifte Şans ⭐ adayı değil; 2. tercih kullanılmıyor
+        self.assertIn("alt_bet_selection her zaman 'YOK'", prompt)
 
-    def test_finalize_best_bet_and_alt_bet(self):
-        def finalize(selection, alt_selection="YOK", alt_confidence=0, odds=None):
+    def test_finalize_best_bet_requires_min_odds(self):
+        def finalize(selection, odds=None):
             prediction = {"predicted_ft_result": "MS 1", "best_bet_selection": selection, "best_bet_confidence": 90,
-                          "best_bet_reason": "gerekçe", "alt_bet_selection": alt_selection, "alt_bet_confidence": alt_confidence}
+                          "best_bet_reason": "gerekçe", "alt_bet_selection": "KG VAR", "alt_bet_confidence": 60}
             with mock.patch.object(config, "MIN_BEST_BET_ODDS", 1.50):
                 result = gemini_engine._finalize(prediction, self._ctx(odds=odds))
             return result["best_bet"], result["alt_bet"]
 
-        # Düşük oranlı ⭐ (MS 1 @ 1.10) eskisi gibi kabul edilir; oranı eşik üstü 2. tercih de kaydedilir
-        best, alt = finalize("ms 1", "kg var", 62)
-        self.assertEqual(best, {"market": "ft", "selection": "MS 1", "odds": 1.10, "confidence": 90, "reason": "gerekçe"})
-        self.assertEqual(alt, {"market": "kg", "selection": "KG VAR", "odds": 1.85, "confidence": 62})
-        # Çifte Şans 2. tercih olabilir, eşiğin altındaki seçenek (ALT @ 1.30) olamaz
-        self.assertEqual(finalize("MS 1", "X-2", 30)[1]["selection"], "X-2")
-        self.assertIsNone(finalize("MS 1", "ALT", 80)[1])
-        self.assertIsNone(finalize("MS 1", "YOK", 0)[1])
-        # ⭐ oranı eşik ve üstüyse 2. tercih tutulmaz
-        best, alt = finalize("KG VAR", "ÜST", 40)
-        self.assertEqual((best["selection"], alt), ("KG VAR", None))
+        # Eşiğin altındaki seçenekler (MS 1 @ 1.10, ALT @ 1.30) ⭐ olamaz
+        self.assertIsNone(finalize("MS 1")[0])
+        self.assertIsNone(finalize("ALT")[0])
+        best, alt = finalize("KG VAR")
+        self.assertEqual(best, {"market": "kg", "selection": "KG VAR", "odds": 1.85, "confidence": 90, "reason": "gerekçe"})
+        self.assertIsNone(alt)   # ⭐ eşik üstü olduğundan 2. tercih tutulmaz
         # Çifte Şans ve bilinmeyen seçimler ⭐ olamaz
         self.assertIsNone(finalize("X-2")[0])
         self.assertIsNone(finalize("Korner Üst")[0])
@@ -1721,8 +1716,10 @@ class TestSourceSwitchAndSync(unittest.TestCase):
         self.assertIn("summary", data)
         self.assertIn("leagues", data)
         summary = data["summary"]
-        for key in ("best_bet_accuracy", "alt_bet_accuracy", "best_bet_total", "alt_bet_total", "total_evaluated_matches"):
+        for key in ("best_bet_accuracy", "alt_bet_accuracy", "best_bet_total", "alt_bet_total", "total_evaluated_matches", "over_75"):
             self.assertIn(key, summary)
+        for key in ("leagues_count", "best_bet_correct", "best_bet_total", "best_bet_accuracy"):
+            self.assertIn(key, summary["over_75"])
         self.assertIsInstance(data["leagues"], list)
 
         # Python model testi

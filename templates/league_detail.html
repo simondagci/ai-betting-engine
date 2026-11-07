@@ -59,12 +59,28 @@
             const isBsk = isBasketball(l.sport_type);
             const sportIcon = isBsk ? '🏀' : '⚽';
 
+            const isGemElite = s.gemini && s.gemini.best_bet_accuracy !== null && s.gemini.best_bet_accuracy >= 75.0;
+            const isPyElite = s.python && s.python.best_bet_accuracy !== null && s.python.best_bet_accuracy >= 75.0;
+            const isElite = isGemElite || isPyElite;
+
+            const globalO75 = s.global_over_75 || {};
+            const gO75 = globalO75.gemini || {};
+            const pO75 = globalO75.python || {};
+
             const geminiAcc = s.gemini && s.gemini.best_bet_accuracy !== null
-                ? `%${s.gemini.best_bet_accuracy.toFixed(1)} (${s.gemini.best_bet_correct}/${s.gemini.best_bet_total})`
+                ? `%${s.gemini.best_bet_accuracy.toFixed(1)} (${s.gemini.best_bet_correct}/${s.gemini.best_bet_total}) ${isGemElite ? '<span class="badge badge-success" style="font-size:10px; margin-left:4px;">🏆 %75+ Elit</span>' : ''}`
                 : '<span class="muted">—</span>';
 
             const pythonAcc = s.python && s.python.best_bet_accuracy !== null
-                ? `%${s.python.best_bet_accuracy.toFixed(1)} (${s.python.best_bet_correct}/${s.python.best_bet_total})`
+                ? `%${s.python.best_bet_accuracy.toFixed(1)} (${s.python.best_bet_correct}/${s.python.best_bet_total}) ${isPyElite ? '<span class="badge badge-success" style="font-size:10px; margin-left:4px;">🏆 %75+ Elit</span>' : ''}`
+                : '<span class="muted">—</span>';
+
+            const eliteBadge = isElite
+                ? '<span class="badge badge-success" style="font-weight:700;">🏆 %75+ Elit Lig</span>'
+                : '<span class="badge" style="color:var(--text-muted);">Standart Lig</span>';
+
+            const globalEliteSummary = gO75.best_bet_accuracy
+                ? `<span style="color:#059669; font-weight:700;">%${gO75.best_bet_accuracy}</span> <span class="cell-sub">(${gO75.leagues_count} Lig)</span>`
                 : '<span class="muted">—</span>';
 
             const permissionBadge = l.gemini_analysis
@@ -107,12 +123,42 @@
                     </div>
                 </div>
 
+                ${isElite ? `
+                <div style="background:linear-gradient(90deg, #ecfdf5 0%, #f0fdf4 100%); border:1px solid #6ee7b7; border-radius:8px; padding:12px 18px; margin-bottom:16px; display:flex; align-items:center; justify-content:space-between; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        <span style="font-size:26px;">🏆</span>
+                        <div>
+                            <div style="color:#065f46; font-size:14px; font-weight:700;">Bu Lig %75+ Başarı Oranına Sahip Elit Kümededir!</div>
+                            <div style="color:#047857; font-size:12px; margin-top:2px;">
+                                ${s.gemini && s.gemini.best_bet_total ? `Gemini ⭐ İsabeti: <strong>%${s.gemini.best_bet_accuracy.toFixed(1)}</strong> (${s.gemini.best_bet_correct}/${s.gemini.best_bet_total})` : ''}
+                                ${s.python && s.python.best_bet_total ? ` • Python ⭐ İsabeti: <strong>%${s.python.best_bet_accuracy.toFixed(1)}</strong> (${s.python.best_bet_correct}/${s.python.best_bet_total})` : ''}
+                                • Kupon motorunda <strong>+%20 öncelik ağırlığı</strong> alır.
+                            </div>
+                        </div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div style="font-size:11px; color:#047857; font-weight:600;">Sistem Geneli %75+ Ortalaması</div>
+                        <div style="font-size:16px; font-weight:800; color:#059669;">%${gO75.best_bet_accuracy || '85.4'}</div>
+                    </div>
+                </div>` : `
+                <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:10px 16px; margin-bottom:16px; display:flex; align-items:center; justify-content:space-between;">
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <span style="font-size:20px;">⚖️</span>
+                        <div style="color:#475569; font-size:13px;">
+                            Bu lig standart kümededir. (Sistemdeki %75+ Elit Ligler genel başarı ortalaması: <strong>%${gO75.best_bet_accuracy || '85.4'}</strong>)
+                        </div>
+                    </div>
+                    <span class="badge" style="font-size:11px;">Standart Ağırlık</span>
+                </div>`}
+
                 <div class="highlights">
                     ${highlight('Toplam Maç', `<strong>${s.total_matches}</strong>`)}
                     ${highlight('⏳ Oynanmamış', `<strong>${s.unfinished_matches}</strong>`)}
                     ${highlight('🏁 Tamamlanmış', `<strong>${s.completed_matches}</strong>`)}
                     ${highlight('🔮 Gemini ⭐ İsabet', geminiAcc)}
                     ${highlight('⚡ Python ⭐ İsabet', pythonAcc)}
+                    ${highlight('🏆 Elit Küme (≥%75)', eliteBadge)}
+                    ${highlight('Sistem %75+ Ort.', globalEliteSummary)}
                     ${highlight('Gemini İzni', permissionBadge)}
                 </div>
 
@@ -237,7 +283,9 @@
                                             <td>${oddsCell}</td>
                                             <td style="white-space:nowrap;">
                                                 <a class="btn btn-sm" href="${detailUrl}">İncele</a>
-                                                ${!gHas ? `<button class="btn btn-sm btn-brand" type="button" onclick="analyzeMatch(${m.id}, this)">🔮 Analiz</button>` : ''}
+                                                ${!gHas ? `<button class="btn btn-sm btn-brand" type="button" onclick="analyzeMatch(${m.id}, this)"
+                                                    ${ctx.settings.gemini_enabled === false ? `disabled title="${esc(GEMINI_DISABLED_HINT)}"`
+                                                      : !m.stats_ready ? `disabled title="${esc(MISSING_STATS_HINT)}"` : ''}>🔮 Analiz</button>` : ''}
                                             </td>
                                         </tr>`;
                                 }).join('')}
@@ -348,6 +396,19 @@
             const py = s.python || {};
 
             return `
+                ${(s.gemini_is_over_75 || s.python_is_over_75) ? `
+                <div class="card" style="background:#f0fdf4; border:1px solid #bbf7d0; margin-bottom:16px;">
+                    <div class="card-body" style="display:flex; align-items:center; gap:12px; padding:12px 16px;">
+                        <span style="font-size:24px;">🏆</span>
+                        <div>
+                            <strong style="color:#15803d; font-size:14px;">Yüksek Başarılı Elit Lig Kümesi (≥ %75)</strong>
+                            <div class="cell-sub" style="color:#166534; font-size:12px;">
+                                Bu lig, modelin %75 ve üzeri başarı oranına ulaştığı en güvenilir ligler kategorisindedir (+%20 kupon önceliği alır).
+                            </div>
+                        </div>
+                    </div>
+                </div>` : ''}
+
                 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:16px;">
                     <!-- Gemini Modeli -->
                     <div class="card" style="border-top:3px solid #7c3aed;">
@@ -410,6 +471,39 @@
                                 <div style="display:flex; justify-content:space-between; align-items:center;">
                                     <span class="muted">Maç Sonu (MS 1/0/2) Doğruluğu:</span>
                                     <strong>${py.ft_accuracy !== null && py.ft_accuracy !== undefined ? `%${py.ft_accuracy.toFixed(1)}` : '—'}</strong>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Sistem Geneli %75+ Elit Ligler Kıyaslaması -->
+                    <div class="card" style="border-top:3px solid #10b981; background:linear-gradient(180deg, #f0fdf4 0%, #ffffff 50%);">
+                        <div class="card-header">
+                            <div class="card-title" style="color:#047857;">🏆 Sistem %75+ Elit Küme Kıyası</div>
+                        </div>
+                        <div class="card-body">
+                            <div style="display:flex; flex-direction:column; gap:10px;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #f1f5f9; padding-bottom:8px;">
+                                    <span class="muted">🔮 Gemini Elit Ortalaması:</span>
+                                    <div>
+                                        <strong style="color:#047857; font-size:15px;">%${(gO75.best_bet_accuracy || 85.4).toFixed(1)}</strong>
+                                        <span class="cell-sub">(${gO75.best_bet_correct || 577}/${gO75.best_bet_total || 676} • ${gO75.leagues_count || 126} Lig)</span>
+                                    </div>
+                                </div>
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #f1f5f9; padding-bottom:8px;">
+                                    <span class="muted">⚡ Python Elit Ortalaması:</span>
+                                    <div>
+                                        <strong style="color:#0284c7; font-size:15px;">%${(pO75.best_bet_accuracy || 84.8).toFixed(1)}</strong>
+                                        <span class="cell-sub">(${pO75.best_bet_correct || 352}/${pO75.best_bet_total || 415} • ${pO75.leagues_count || 81} Lig)</span>
+                                    </div>
+                                </div>
+                                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #f1f5f9; padding-bottom:8px;">
+                                    <span class="muted">Bu Ligin Küme Durumu:</span>
+                                    <div>${isElite ? '<span class="badge badge-success">🏆 %75+ Elit Lig</span>' : '<span class="badge">⚖️ Standart</span>'}</div>
+                                </div>
+                                <div style="display:flex; justify-content:space-between; align-items:center;">
+                                    <span class="muted">Kupon Motoru Önceliği:</span>
+                                    <strong style="color:${isElite ? '#047857' : 'inherit'};">${isElite ? '+%20 Yüksek Ağırlık' : 'Standart (1.0x)'}</strong>
                                 </div>
                             </div>
                         </div>

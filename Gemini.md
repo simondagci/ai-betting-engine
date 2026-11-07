@@ -90,7 +90,7 @@ sözlüğü `01_bulten_api.md` — uygulama içi bülten formatı hâlâ budur).
   - Tek maç analizi: lig izni kapalıysa 409 `LEAGUE_DISABLED` (`{"enable_league": true}` ile izin açılıp analiz yapılır); istatistik eksikse 409 `MISSING_STATS`.
 - **⭐ En güçlü tercih + 2. tercih:**
   - ⭐ `best_bet_*`: Gemini'nin kendi tahmin marketlerinden (futbol: MS, İY, 3 gol ALT/ÜST = 3.5 baremi, KG; basketbol: MS, İY, Toplam Sayı Alt/Üst)
-    gerçekleşeceğine **en çok güvendiği** seçim. Oran sınırı yoktur (1.10'luk favori olabilir). Çifte Şans ⭐ olamaz.
+    gerçekleşeceğine **en çok güvendiği** seçim. Oranı `MIN_BEST_BET_ODDS` (1.30) ve üstü olmalıdır (1.10'luk favori ⭐ olamaz); 2. tercih artık kullanılmaz. Çifte Şans ⭐ olamaz.
   - 2. tercih `alt_bet_*`: ⭐ seçimin oranı `MIN_BEST_BET_ODDS` (1.30) **altındaysa**, oranı eşik ve üstü seçenekler (Çifte Şans dahil)
     arasından Gemini'nin en çok güvendiği seçim + olasılığı (`alt_bet_confidence`). ⭐ oranı eşik ve üstüyse 2. tercih kaydedilmez.
   - Prompt'a tüm adaylar oran ve piyasa olasılığıyla gider. `gemini_engine.finalize_best_bet` seçimlerin ilgili aday listesinde
@@ -228,22 +228,18 @@ her maç için çalışma anında doldurulur. Prompt değişirse bu özeti de g�
 - **Çıktı:** `response_mime_type="application/json"` + `response_schema` (`MatchPrediction` / `BasketballPrediction`).
 
 ```text
-Sen profesyonel bir futbol veri analisti, kıdemli bahis stratejisti ve yapay zeka tahmin motorusun.
-...
---- MAÇ BİLGİLERİ ---                   Spor Türü / Lig / Tarih ve Saat / Ev Sahibi / Deplasman
---- İDDAA BAHİS ORANLARI ---            ← {data["odds"]}: ana marketler önce, en fazla 25 oran
---- VERİTABANI İSTATİSTİKLERİ ---       (her maç tek satır: Tarih | Lig | Ev Skor Dep (İY) [G/B/M])
-1. Ev Sahibi Son Maçları (≤10)  2. Deplasman Son Maçları (≤10)  3. H2H (≤10)
-4. Lig Puan Durumu (Sıra. Takım | O G B M | Gol | Puan | Son 5)  5. Sakat/Cezalı (iddaa.com'da yok)
---- ÇOK ÖNEMLİ İŞ KURALI (ALT / ÜST SINIRI: 3 GOL) ---
-Toplam gol >= 4 ise "ÜST", <= 3 ise "ALT".
---- EN GÜÇLÜ TERCİH (best_bet) VE 2. TERCİH (alt_bet) ---   ← {data["best_bet"]}: tüm adaylar
-- MS 1 (Maç Sonu) | Oran 1.10 | Piyasa olasılığı %91
-- KG VAR (Karşılıklı Gol) | Oran 1.74 | Piyasa olasılığı %57
-...
-1) best_bet: Çifte Şans hariç en çok güvendiğin seçenek + olasılık + gerekçe.
-2) alt_bet: best_bet oranı MIN_BEST_BET_ODDS altındaysa, oranı eşik ve üstü seçenekler (Çifte Şans dahil) arasından
-   en çok güvendiğin seçenek + olasılık; değilse 'YOK' / 0.
+ROLÜN: olasılık modelleyicisi; amaç favoriyi söylemek değil, KALİBRE olasılık vermek.
+1. MAÇ VE PİYASA        Lig / Tarih / Takımlar, oranlar (en fazla MAX_ODDS_ROWS), PİYASA OLASILIKLARI
+                         (_format_market_prior: marj arındırılmış MS / İY / KG / Alt-Üst; başlangıç noktası)
+2. VERİTABANI           1. Ev Sahibi Son Maçları, 2. Deplasman Son Maçları, H2H, Puan Durumu, Sakat/Cezalı
+3. YÖNTEM               piyasadan başla -> veriden güç farkı -> Google Search yalnızca onaylı kadro/fikstür/motivasyon haberi
+                         -> toplamda piyasadan en fazla ~10 puan sap -> Poisson gol modeli
+4. TUTARLILIK           MS 0 yalnızca gerçekten en olasıysa; İY 0 tipik %40-50; KESİNLİKLE 3 GOL KURALI (>=4 ÜST, <=3 ALT);
+                         skor / sonuç / İY / KG birbiriyle uyumlu
+5. GÜVEN = OLASILIK     MS'de nadiren %65 üstü, KG/Alt-Üst genelde 52-68, %92 üstü yok; veri eksikse düşür
+6. ⭐ / 2. TERCİH       {data["best_bet"]}: tüm adaylar (Oran | Piyasa olasılığı); best_bet = olasılığı en yüksek seçenek,
+                         oranı düşük diye elenmez; alt_bet yalnızca best_bet oranı MIN_BEST_BET_ODDS altındaysa, yoksa 'YOK' / 0
+7. ÇIKTI                son kontrol, yalnızca şemaya uygun JSON
 ```
 
 **Futbol şeması (`MatchPrediction`):** `analysis_summary`, `predicted_ht_result`, `predicted_ft_result`,

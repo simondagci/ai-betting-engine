@@ -248,6 +248,7 @@
                     <div class="kpi-label">⭐ Tercih 1 (En Güçlü Tercih) İsabeti</div>
                     <div class="kpi-value text-brand" id="accKpiBestBetPct">—</div>
                     <div class="kpi-sub" id="accKpiBestBetSub">Yükleniyor...</div>
+                    <div class="kpi-sub" id="accKpiBestBetWeek" style="margin-top:6px;">—</div>
                 </div>
                 <div class="card kpi-card">
                     <div class="kpi-label">🎯 2. Tercih (alt_bet) İsabeti</div>
@@ -268,6 +269,11 @@
                     <div class="kpi-label">Sonuçlanan Lig / Maç</div>
                     <div class="kpi-value" id="accKpiCounts">—</div>
                     <div class="kpi-sub" id="accKpiCountsSub">Değerlendirilen veriler</div>
+                </div>
+                <div class="card kpi-card" style="border-top:3px solid #10b981; background:linear-gradient(180deg, #f0fdf4 0%, #ffffff 60%);">
+                    <div class="kpi-label" style="color:#047857; font-weight:700;">🏆 %75+ Başarılı Ligler</div>
+                    <div class="kpi-value" id="accKpiOver75Pct" style="color:#059669;">—</div>
+                    <div class="kpi-sub" id="accKpiOver75Sub">Yükleniyor...</div>
                 </div>
             </div>
 
@@ -298,10 +304,16 @@
                             <option value="BASKETBALL">🏀 Basketbol</option>
                         </select>
                     </div>
-                    <label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; cursor:pointer;">
-                        <input type="checkbox" id="accuracyOnlyEvaluated" checked style="width:18px; height:18px; cursor:pointer;">
-                        <span>Sadece Sonucu Olan Ligleri Göster</span>
-                    </label>
+                    <div style="display:flex; align-items:center; gap:16px;">
+                        <label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; cursor:pointer;">
+                            <input type="checkbox" id="accuracyOnlyEvaluated" checked style="width:18px; height:18px; cursor:pointer;">
+                            <span>Sadece Sonucu Olanlar</span>
+                        </label>
+                        <label style="display:flex; align-items:center; gap:6px; font-size:13px; font-weight:600; cursor:pointer; color:#047857; background:#ecfdf5; padding:4px 10px; border:1px solid #a7f3d0; border-radius:6px;">
+                            <input type="checkbox" id="accuracyOnlyOver75" style="width:18px; height:18px; cursor:pointer;">
+                            <span>🏆 Sadece %75+ Ligler</span>
+                        </label>
+                    </div>
                 </div>
 
                 <!-- Veri Tablosu -->
@@ -1379,8 +1391,10 @@
             });
 
             const enabledCount = state.leagues.filter(l => l.gemini_analysis).length;
+            const over75Gem = state.leagues.filter(l => l.best_bet_accuracy !== null && l.best_bet_accuracy >= 75).length;
+            const over75Py = state.leagues.filter(l => l.python_best_bet_accuracy !== null && l.python_best_bet_accuracy >= 75).length;
             document.getElementById('leaguesFooter').textContent =
-                `${rows.length} / ${state.leagues.length} lig gösteriliyor • ${enabledCount} ligde Gemini izni açık`;
+                `${rows.length} / ${state.leagues.length} lig gösteriliyor • ${enabledCount} ligde Gemini izni açık • 🏆 %75+ Elit Ligler: Gemini ${over75Gem} Lig, Python ${over75Py} Lig`;
 
             const body = document.getElementById('leaguesBody');
             if (rows.length === 0) {
@@ -1847,6 +1861,11 @@
                 const s = res.summary;
                 document.getElementById('accKpiBestBetPct').textContent = s.best_bet_total ? `%${Number(s.best_bet_accuracy).toFixed(1)}` : '—';
                 document.getElementById('accKpiBestBetSub').textContent = `${s.best_bet_correct} / ${s.best_bet_total} tercih tuttu`;
+                const w = res.week || {};
+                document.getElementById('accKpiBestBetWeek').innerHTML = w.best_bet_total
+                    ? `Bu hafta: <strong>%${esc(Number(w.best_bet_accuracy).toFixed(1))}</strong> (${esc(w.best_bet_correct)}/${esc(w.best_bet_total)})`
+                    : 'Bu hafta: sonuçlanan maç yok';
+                document.getElementById('accKpiBestBetWeek').title = w.week_start ? `${w.week_start} – ${w.week_end}` : '';
                 document.getElementById('accKpiAltBetPct').textContent = s.alt_bet_total ? `%${Number(s.alt_bet_accuracy).toFixed(1)}` : '—';
                 document.getElementById('accKpiAltBetSub').textContent = `${s.alt_bet_correct} / ${s.alt_bet_total} tercih tuttu`;
 
@@ -1867,6 +1886,15 @@
 
                 document.getElementById('accKpiCounts').textContent = `${s.evaluated_leagues_count} Lig • ${s.total_evaluated_matches} Maç`;
 
+                const o75 = s.over_75 || {};
+                if (o75.best_bet_total) {
+                    document.getElementById('accKpiOver75Pct').textContent = `%${Number(o75.best_bet_accuracy).toFixed(1)}`;
+                    document.getElementById('accKpiOver75Sub').textContent = `${o75.best_bet_correct} / ${o75.best_bet_total} tercih tuttu • ${o75.leagues_count} Lig`;
+                } else {
+                    document.getElementById('accKpiOver75Pct').textContent = '—';
+                    document.getElementById('accKpiOver75Sub').textContent = 'Sonuçlanan maç yok';
+                }
+
                 state.accuracyLeagues = res.leagues || [];
                 renderAccuracy();
             } catch (err) {
@@ -1879,11 +1907,13 @@
             const q = (document.getElementById('accuracySearch').value || '').toLowerCase().trim();
             const sport = document.getElementById('accuracySportFilter').value;
             const onlyEval = document.getElementById('accuracyOnlyEvaluated').checked;
+            const onlyOver75 = document.getElementById('accuracyOnlyOver75') ? document.getElementById('accuracyOnlyOver75').checked : false;
 
             let rows = state.accuracyLeagues.filter(l => {
                 if (q && !l.name.toLowerCase().includes(q)) return false;
                 if (sport !== 'ALL' && l.sport_type !== sport) return false;
                 if (onlyEval && (!l.evaluated || l.evaluated === 0)) return false;
+                if (onlyOver75 && (l.best_bet_accuracy === null || l.best_bet_accuracy < 75.0)) return false;
                 return true;
             });
 
@@ -2081,6 +2111,7 @@
         document.getElementById('accuracySearch').addEventListener('input', renderAccuracy);
         document.getElementById('accuracySportFilter').addEventListener('change', renderAccuracy);
         document.getElementById('accuracyOnlyEvaluated').addEventListener('change', renderAccuracy);
+        document.getElementById('accuracyOnlyOver75').addEventListener('change', renderAccuracy);
         document.getElementById('btnRefreshAccuracy').addEventListener('click', () => loadAccuracy(state.accuracyModel));
 
         // ==================== BAŞLANGIÇ ====================

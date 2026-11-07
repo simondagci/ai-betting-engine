@@ -14,7 +14,7 @@ MAX_RETRIES = 3
 # Prompt'a giden veri sınırları (ham JSON yerine kompakt satırlar gönderildiği için kayıtlar yarıda kesilmez)
 MAX_HISTORY_ROWS = 10
 MAX_TABLE_ROWS = 30
-MAX_ODDS_ROWS = 25
+MAX_ODDS_ROWS = 40
 # Oran listesinde önce bu marketler gönderilir
 PRIORITY_MARKETS = ("Maç Sonucu", "İlk Yarı Sonucu", "Karşılıklı Gol", "Çifte Şans",
                     "2.5 Gol Alt/Üst", "3.5 Gol Alt/Üst", "1.5 Gol Alt/Üst",
@@ -127,8 +127,9 @@ def _total_points_line(match_context: Dict[str, Any]) -> Optional[float]:
     return line if line is not None else rules.main_total_points_line(match_context.get("odds", []))
 
 def _best_bet_candidates(match_context: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """⭐ en güçlü tercih adayları: Gemini'nin kendi tahmin marketleri (MS, İY, 3 gol ALT/ÜST, KG), oran sınırı yok."""
-    return rules.bet_candidates(match_context.get("odds", []), _sport_type(match_context), markets=rules.BEST_BET_MARKETS)
+    """⭐ en güçlü tercih adayları: Gemini'nin kendi tahmin marketleri (MS, İY, 3 gol ALT/ÜST, KG); oranı MIN_BEST_BET_ODDS ve üstü olmalı."""
+    return rules.bet_candidates(match_context.get("odds", []), _sport_type(match_context), config.MIN_BEST_BET_ODDS,
+                                markets=rules.BEST_BET_MARKETS)
 
 def _alt_bet_candidates(match_context: Dict[str, Any]) -> List[Dict[str, Any]]:
     """2. tercih adayları: oranı MIN_BEST_BET_ODDS ve üstü tüm seçenekler (Çifte Şans dahil)."""
@@ -136,26 +137,25 @@ def _alt_bet_candidates(match_context: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _format_best_bet_section(match_context: Dict[str, Any]) -> str:
     """
-    ⭐ en güçlü tercih ve 2. tercih bölümü. Seçenekler oran ve piyasa olasılığıyla verilir: Gemini en çok güvendiği seçimi
-    yazar; o seçimin oranı MIN_BEST_BET_ODDS altındaysa, oranı eşik ve üstü seçenekler arasından bir 2. tercih de yazar.
+    ⭐ en güçlü tercih bölümü. Seçenekler oran ve piyasa olasılığıyla verilir; yalnızca oranı MIN_BEST_BET_ODDS ve üstü
+    olanlar aday olur (1.10'luk favori ⭐ olamaz). Bu yüzden 2. tercih (alt_bet) gerekmez: her zaman 'YOK' / 0.
     """
     min_odds = config.MIN_BEST_BET_ODDS
-    candidates = rules.bet_candidates(match_context.get("odds", []), _sport_type(match_context))
+    candidates = _best_bet_candidates(match_context)
     header = "--- EN GÜÇLÜ TERCİH (best_bet) VE 2. TERCİH (alt_bet) ---"
     if not candidates:
-        return (f"{header}\nBu maçta uygun oran yok: best_bet_selection için kendi MS tahminini yaz, "
-                "alt_bet_selection alanına 'YOK', alt_bet_confidence için 0 ver.")
+        return (f"{header}\nBu maçta oranı {min_odds:.2f} ve üstü uygun seçenek yok: best_bet_selection için 'YOK', "
+                "best_bet_confidence için 0 ver; alt_bet_selection 'YOK', alt_bet_confidence 0 olsun.")
     lines = [f"- {c['selection']} ({c['market_label']}) | Oran {c['odds']:.2f} | Piyasa olasılığı %{100 / c['odds']:.0f}"
              for c in candidates]
     return "\n".join([
         header,
-        "Seçenekler (oran | oranın ima ettiği piyasa olasılığı):",
+        f"Seçenekler (yalnızca oranı {min_odds:.2f} ve üstü olanlar; oran | oranın ima ettiği piyasa olasılığı):",
         *lines,
-        "1) best_bet: Çifte Şans HARİÇ seçenekler arasından gerçekleşeceğine EN ÇOK güvendiğin TEK seçeneği yaz "
-        "(listedeki yazımıyla AYNEN, örn. 'MS 1', 'ALT'), gerçekleşme olasılığını (best_bet_confidence, 1-100) ve 1 cümlelik gerekçesini (best_bet_reason).",
-        f"2) alt_bet: best_bet seçeneğinin oranı {min_odds:.2f} altındaysa, oranı {min_odds:.2f} ve üstü seçenekler (Çifte Şans dahil) "
-        "arasından gerçekleşeceğine EN ÇOK güvendiğin TEK seçeneği alt_bet_selection'a, olasılığını alt_bet_confidence'a yaz. "
-        f"best_bet oranı {min_odds:.2f} ve üstüyse veya uygun seçenek yoksa alt_bet_selection 'YOK', alt_bet_confidence 0 olsun.",
+        "1) best_bet: yukarıdaki seçenekler arasından gerçekleşeceğine EN ÇOK güvendiğin TEK seçeneği yaz "
+        "(listedeki yazımıyla AYNEN, örn. 'MS 1', 'ALT'), gerçekleşme olasılığını (best_bet_confidence, 1-100) ve 1 cümlelik gerekçesini (best_bet_reason). "
+        f"Oranı {min_odds:.2f} altındaki seçenekler listede yoktur ve seçilemez.",
+        "2) alt_bet: kullanılmıyor; alt_bet_selection her zaman 'YOK', alt_bet_confidence 0 olsun.",
         "Olasılıkları verilere dayanarak GERÇEKÇİ tahmin et, abartma.",
     ])
 
@@ -172,58 +172,253 @@ def _data_sections(match_context: Dict[str, Any], score_label: str) -> Dict[str,
         "missing": _json_or_placeholder(match_context.get("missing"), "Yerel sakat/cezalı verisi yok (İnternetten kontrol ediniz).")[:800],
     }
 
+def _format_market_prior(match_context: Dict[str, Any]) -> str:
+    """
+    Bahis şirketi marjından arındırılmış (normalize) piyasa olasılıkları. Piyasa iyi kalibre bir başlangıç noktasıdır:
+    Gemini bu olasılıklardan yola çıkar ve yalnızca somut kanıtla sapar.
+    Yalnızca eksiksiz marketler (MS 3 seçenek, İY 3, KG 2, Alt/Üst 2; basketbolda MS 2 ve ana Toplam Sayı baremi) gösterilir.
+    """
+    sport = _sport_type(match_context)
+    odds = match_context.get("odds", [])
+    basketball = rules.is_basketball(sport)
+    wanted = {"ft": 2 if basketball else 3} if basketball else {"ft": 3, "ht": 3, "over_under": 2, "kg": 2}
+    by_market: Dict[str, List[Dict[str, Any]]] = {}
+    for c in rules.bet_candidates(odds, sport, markets=tuple(wanted) + (("total_points",) if basketball else ())):
+        by_market.setdefault(c["market"], []).append(c)
+
+    lines = []
+    for market, group in by_market.items():
+        if market == "total_points":
+            line = _total_points_line(match_context)
+            group = [c for c in group if line is not None and rules.parse_total_points_option(c["selection"])
+                     and rules.parse_total_points_option(c["selection"])[0] == line]
+            size = 2
+        else:
+            size = wanted[market]
+        if len(group) != size:
+            continue
+        raw = [1.0 / c["odds"] for c in group]
+        total = sum(raw)
+        parts = " | ".join(f"{c['selection']} %{100 * r / total:.0f}" for c, r in zip(group, raw))
+        lines.append(f"- {group[0]['market_label']}: {parts} (marj: %{100 * (total - 1):.1f})")
+    return "\n".join(lines) if lines else "Eksiksiz market bulunamadı; piyasa olasılığı hesaplanamadı."
+
 def _build_basketball_prompt(match_context: Dict[str, Any]) -> str:
     match_info = match_context.get("match", {})
     home_team = match_info.get("home_team", "Ev Sahibi")
     away_team = match_info.get("away_team", "Deplasman")
     data = _data_sections(match_context, score_label="Sayı")
     line = _total_points_line(match_context)
-    line_rule = (f"- Bu maç için bültenin belirlediği Toplam Sayı Alt/Üst baremi: {line:g}. Tahmin ettiğin toplam sayı "
-                 "(predicted_total_points) bu sınırın üzerindeyse ÜST, altındaysa ALT sayılacaktır.") if line is not None else ""
+
+    line_rule = (
+        f"Resmi Toplam Sayı baremi: {line:g}. Toplam sayı bu baremin ÜZERİNDEYSE ÜST, eşit veya altındaysa ALT sayılır. "
+        "predicted_score toplamı ile predicted_total_points aynı olmalıdır."
+        if line is not None else
+        "Toplam sayı baremi bulunamadı; toplam sayıyı yine tahmin et ama bareme veya orana dair bir şey uydurma."
+    )
 
     return f"""
-Sen profesyonel bir basketbol veri analisti, kıdemli bahis stratejisti ve yapay zeka tahmin motorusun.
-Aşağıda verilen karşılaşma bilgilerini, bahis oranlarını ve Google Search aracını kullanarak internetteki güncel haberleri, takım formlarını, sakatlıkları ve rotasyon durumlarını analiz et.
+ROLÜN:
+Sen profesyonel bir basketbol veri analisti ve olasılık modelleyicisisin. Amacın favoriyi veya popüler takımı söylemek değil,
+sonuçların GERÇEK olasılıklarını iyi kalibre etmektir. Başarın, söylediğin %70'lerin gerçekten yaklaşık %70 tutmasıyla ölçülür.
 
---- MAÇ BİLGİLERİ ---
-Spor Türü: BASKETBOL
-Lig / Turnuva: {match_info.get("league_name", "Bilinmeyen Lig")}
-Tarih ve Saat: {match_info.get("match_date", "")} {match_info.get("match_time", "")}
-Ev Sahibi Takım: {home_team}
-Deplasman Takımı: {away_team}
+==================================================
+1. MAÇ VE PİYASA
+==================================================
 
---- İDDAA BAHİS ORANLARI ---
+Lig: {match_info.get("league_name", "Bilinmeyen Lig")}
+Tarih: {match_info.get("match_date", "")} {match_info.get("match_time", "")}
+Ev sahibi: {home_team}
+Deplasman: {away_team}
+
+Bülten oranları:
 {data["odds"]}
 
---- VERİTABANI İSTATİSTİKLERİ ---
-(Satır formatı: Tarih | Lig | Ev Sahibi Skor Deplasman (İY skoru) [ilgili takım için sonuç: G=Galibiyet, M=Mağlubiyet])
+PİYASA OLASILIKLARI (marj arındırılmış, başlangıç noktan):
+{_format_market_prior(match_context)}
 
-1. Ev Sahibi Takım ({home_team}) Son Maçları:
+==================================================
+2. VERİTABANI İSTATİSTİKLERİ
+==================================================
+
+1. Ev Sahibi Son Maçları:
 {data["home_last"]}
 
-2. Deplasman Takımı ({away_team}) Son Maçları:
+2. Deplasman Son Maçları:
 {data["away_last"]}
 
-3. Aralarındaki İkili Mücadele Geçmişi (H2H):
+İKİ TAKIMIN H2H GEÇMİŞİ:
 {data["h2h"]}
 
-4. Lig Puan Durumu (Sayı: atılan:yenilen):
+LİG PUAN DURUMU:
 {data["table"]}
 
-5. Sakat ve Cezalı Oyuncular:
+SAKAT VE CEZALI OYUNCULAR:
 {data["missing"]}
 
---- ÇOK ÖNEMLİ BASKETBOL KURALLARI ---
-- Basketbolda maç sonucu ve ilk yarıda beraberlik (0) YOKTUR: predicted_ft_result sadece "MS 1" veya "MS 2", predicted_ht_result sadece "İY 1" veya "İY 2" olabilir.
-- Basketbolda karşılıklı gol (KG) yoktur.
-- MAÇ SONU TOPLAM SAYI tahmini yap (predicted_total_points): iki takımın maç sonundaki toplam sayısı, uzatmalar dahil.
-  Takımların son maçlardaki attığı / yediği sayıları ve puan durumundaki sayı ortalamalarını dikkate al.
-- predicted_score ile predicted_total_points tutarlı olmalı (skordaki iki sayının toplamı = toplam sayı).
-{line_rule}
+==================================================
+3. YÖNTEM (SIRAYLA UYGULA)
+==================================================
+
+1) Başlangıç: normalize piyasa olasılıklarını kabul et. Piyasa, bilgiyi çok iyi fiyatlar; düşük oranlı favori çoğu zaman gerçekten favoridir.
+   Favoriyi yalnızca somut kanıt varsa (aşağıdakiler) zayıflat; "sürpriz olabilir" gibi genel gerekçeyle piyasadan sapma.
+2) Veriden güç farkı çıkar: son 10 maçta atılan/yenen sayı ortalaması ve fark, iç saha / deplasman ayrımı, puan durumundaki
+   konum ve net sayı farkı. Rakip kalitesini ve maç sırasını (en yeni maç en önemli) dikkate al.
+3) Google Search'ü YALNIZCA şunlar için kullan: onaylı sakatlık / dinlenme (özellikle ana oyun kurucu, skorer, pivot),
+   back-to-back veya yoğun seyahat, somut motivasyon durumu (eleme maçı, sıralama kaygısı). İleri istatistik (ORtg, pace vb.)
+   veya hakem verisi arayıp bulamamak tahmini değiştirmez; bulamadığını yok say, uydurma.
+4) Düzeltme: kanıt başına küçük, toplamda piyasadan en fazla ~10 puan sap. Doğrulanmamış haberle sapma.
+5) Toplam sayı: iki takımın beklenen sayısını ayrı düşün (kendi ortalaması ile rakibin yediği sayının karışımı, tempo farkı).
+   Tek başına son maç ortalamasına bakma; barem piyasanın en iyi toplam sayı tahminidir, baremden büyük sapma için güçlü kanıt gerekir.
+
+==================================================
+4. TUTARLILIK KURALLARI
+==================================================
+
+- Basketbolda MS ve İY'de beraberlik YOKTUR: predicted_ft_result yalnızca "MS 1" / "MS 2", predicted_ht_result yalnızca "İY 1" / "İY 2".
+- predicted_ft_result, kendi olasılığın en yüksek olan takımdır; predicted_score ile aynı yönü göstermelidir.
+- Skor uzatmalar dahil resmi skordur. İlk yarı skoru, ilk yarı sonucuyla tutarlı olmalı.
+- Basketbolda KG yoktur.
+- MAÇ SONU TOPLAM SAYI (predicted_total_points): iki takımın uzatmalar dahil toplam sayısı; predicted_score ile aynı olmalı.
+- {line_rule}
+- Tahmin edilen toplam sayı bareme çok yakınsa Alt/Üst güvenini 50'ye yaklaştır.
+
+==================================================
+5. GÜVEN PUANI = GERÇEKLEŞME OLASILIĞI
+==================================================
+
+confidence_score ve best_bet_confidence, söylediğin seçimin gerçekleşme olasılığıdır (%). Puanı süslemek için şişirme.
+- Çok dengeli maç: 50-58. Belirgin favori: 62-75. Piyasa %80+ veriyorsa ve kanıt çelişmiyorsa 78-88 verebilirsin.
+- Kesin görünen maçlarda bile %92 üstünü kullanma.
+- Veri eksikse, kilit oyuncu belirsizse veya kaynak bulamadıysan puanı düşür.
+- Güveni takım ismine, şampiyonluk geçmişine veya orana göre değil, hesapladığın olasılığa göre ver.
+
+==================================================
+6. EN GÜÇLÜ TERCİH VE İKİNCİ TERCİH
+==================================================
 
 {data["best_bet"]}
 
-Lütfen Google Search ile takımların en güncel durumlarını (sakatlıklar, rotasyon, back-to-back maçlar, teknik direktör açıklamaları) tara ve aşağıdaki JSON formatında profesyonel tahmin oluştur.
+- best_bet, listedeki seçenekler (Çifte Şans hariç) arasından GERÇEKLEŞME OLASILIĞI EN YÜKSEK olandır.
+  Liste zaten oranı düşük seçenekleri içermez; yüksek oran bir avantaj değildir, yalnızca olasılığa bak.
+- Yazımı listedeki gibi AYNEN kullan; listede olmayan market veya oran üretme.
+- alt_bet kullanılmıyor: her zaman 'YOK'.
+
+==================================================
+7. ÇIKTI
+==================================================
+
+Yanıtı vermeden önce kontrol et: skor toplamı = predicted_total_points, MS yönü skorla uyumlu, İY tutarlı, seçimler listede var.
+SADECE Pydantic şemasına uygun JSON döndür; markdown veya açıklama ekleme.
+analysis_summary: 3-4 cümlelik Türkçe analiz; piyasadan saptıysan nedenini ve kullandığın somut kanıtı yaz.
+Bulamadığın bilgiyi uydurma; belirsizliği güven puanına yansıt.
+"""
+
+def _build_football_prompt(match_context: Dict[str, Any]) -> str:
+    match_info = match_context.get("match", {})
+    home_team = match_info.get("home_team", "Ev Sahibi")
+    away_team = match_info.get("away_team", "Deplasman")
+    data = _data_sections(match_context, score_label="Gol")
+
+    return f"""
+ROLÜN:
+Sen kıdemli bir futbol veri bilimcisi ve olasılık modelleyicisisin. Amacın favoriyi veya popüler takımı söylemek değil,
+sonuçların GERÇEK olasılıklarını iyi kalibre etmektir. Başarın, söylediğin %60'ların gerçekten yaklaşık %60 tutmasıyla ölçülür.
+
+==================================================
+1. MAÇ VE PİYASA
+==================================================
+
+Lig: {match_info.get("league_name", "Bilinmeyen Lig")}
+Tarih: {match_info.get("match_date", "")} {match_info.get("match_time", "")}
+Ev sahibi: {home_team}
+Deplasman: {away_team}
+
+İddaa oranları:
+{data["odds"]}
+
+PİYASA OLASILIKLARI (marj arındırılmış, başlangıç noktan):
+{_format_market_prior(match_context)}
+
+==================================================
+2. VERİTABANI İSTATİSTİKLERİ
+==================================================
+
+1. Ev Sahibi Son Maçları:
+{data["home_last"]}
+
+2. Deplasman Son Maçları:
+{data["away_last"]}
+
+İKİ TAKIMIN H2H GEÇMİŞİ:
+{data["h2h"]}
+
+LİG PUAN DURUMU:
+{data["table"]}
+
+SAKAT VE CEZALI OYUNCULAR:
+{data["missing"]}
+
+==================================================
+3. YÖNTEM (SIRAYLA UYGULA)
+==================================================
+
+1) Başlangıç: normalize piyasa olasılıklarını kabul et. Piyasa, bilgiyi çok iyi fiyatlar; 1.20-1.40 oranlı favori çoğu zaman
+   gerçekten kazanır. Favoriyi yalnızca somut kanıt varsa zayıflat; "sürpriz olabilir" gibi genel gerekçeyle piyasadan sapma.
+2) Veriden güç farkı çıkar: son 10 maçta atılan/yenen gol, iç saha ve deplasman ayrımı, puan durumundaki konum ve averaj.
+   Rakip kalitesini ve maç sırasını (en yeni maç en önemli) dikkate al. H2H ve eski teknik direktör dönemi maçları düşük ağırlıklıdır.
+3) Google Search'ü YALNIZCA şunlar için kullan: onaylı sakatlık / ceza / muhtemel 11 (kaleci, stoper, ana golcü, oyun kurucu),
+   teknik direktör değişikliği, yoğun fikstür (son 4 günde maç, kupa yorgunluğu), kümede kalma / şampiyonluk gibi somut motivasyon.
+   xG, hakem, hava durumu gibi verileri arayıp bulamamak tahmini değiştirmez; bulamadığını yok say, uydurma.
+4) Düzeltme: kanıt başına küçük, toplamda piyasadan en fazla ~10 puan sap. Doğrulanmamış haberle sapma.
+5) Gol modeli: iki takımın beklenen golünü ayrı hesapla (kendi atma ortalaması ile rakibin yeme ortalamasının karışımı,
+   iç saha avantajı), Poisson mantığıyla skor dağılımını düşün. En olası skor ile en olası sonuç aynı şey değildir.
+
+==================================================
+4. TUTARLILIK KURALLARI
+==================================================
+
+- predicted_ft_result, DÜZELTİLMİŞ olasılığı en yüksek olan sonuçtur. Beraberlik (MS 0) ancak gerçekten en yüksek olasılıktaysa
+  seçilir; futbolda MS 0 genelde %22-30 aralığındadır, dengeli maçta bile 1 veya 2'nin gerisinde kalabilir.
+- İlk yarı bağımsız modellenir: İY 0 (beraberlik) futbolda tipik olarak %40-50'dir ve çoğu maçta en olası İY sonucudur.
+  İY 1/2'yi yalnızca bir taraf ilk yarıda belirgin üstünse seç.
+- predicted_score, predicted_ft_result ile; predicted_ht_score, predicted_ht_result ile tutarlı olmalı.
+- 3 GOL KURALI KESİNLİKLE UYGULANACAK (KESİNLİKLE 3 GOL KURALI): toplam gol 0-3 ise ALT, 4 ve üstü ise ÜST.
+  (2-1, 3-0, 1-2 → ALT; 2-2, 3-1, 4-0 → ÜST.) predicted_over_under_3 bu kurala ve skora uygun olmalı.
+  3.5 baremi yüksektir: ÜST için güçlü bir gol beklentisi (iki takım toplamı ~3.3+) gerekir.
+- KG için iki takımın da gol atma olasılığını ayrı hesapla; yüksek toplam gol tek başına KG VAR değildir. KG ile skor tutarlı olmalı.
+
+==================================================
+5. GÜVEN PUANI = GERÇEKLEŞME OLASILIĞI
+==================================================
+
+confidence_score ve best_bet_confidence, söylediğin seçimin gerçekleşme olasılığıdır (%). Puanı süslemek için şişirme.
+- MS gibi 3 sonuçlu marketlerde en olası sonuç bile nadiren %65'i aşar; belirgin favoride 55-70, dengeli maçta 38-48.
+- İki sonuçlu marketlerde (KG, Alt/Üst) belirsizlik yüksektir: çoğu zaman 52-68.
+- Piyasa %80+ veriyorsa ve kanıt çelişmiyorsa 78-88 verebilirsin; %92 üstünü kullanma.
+- Veri eksikse, kilit oyuncu belirsizse veya kaynak bulamadıysan puanı düşür.
+- Güveni takım ismine, popülerliğe veya orana göre değil, hesapladığın olasılığa göre ver.
+
+==================================================
+6. EN GÜÇLÜ TERCİH VE İKİNCİ TERCİH
+==================================================
+
+{data["best_bet"]}
+
+- best_bet, listedeki seçenekler (Çifte Şans hariç) arasından GERÇEKLEŞME OLASILIĞI EN YÜKSEK olandır.
+  Liste zaten oranı düşük seçenekleri içermez; yüksek oran bir avantaj değildir, yalnızca olasılığa bak.
+  Kendi olasılığını normalize piyasa olasılığıyla kıyasla.
+- Yazımı listedeki gibi AYNEN kullan; listede olmayan market veya oran üretme.
+- alt_bet kullanılmıyor: her zaman 'YOK'.
+
+==================================================
+7. ÇIKTI
+==================================================
+
+Yanıtı vermeden önce kontrol et: skor ↔ MS sonucu, İY skoru ↔ İY sonucu, toplam gol ↔ ALT/ÜST, skor ↔ KG, seçimler listede var.
+SADECE Pydantic şemasına uygun JSON döndür; markdown veya açıklama ekleme.
+analysis_summary: 3-4 cümlelik Türkçe analiz; piyasadan saptıysan nedenini ve kullandığın somut kanıtı yaz.
+Bulamadığın bilgiyi uydurma; belirsizliği güven puanına yansıt.
 """
 
 def build_prompt(match_context: Dict[str, Any]) -> str:
@@ -231,54 +426,7 @@ def build_prompt(match_context: Dict[str, Any]) -> str:
     sport_type = match_info.get("sport_type", rules.FOOTBALL)
     if rules.is_basketball(sport_type):
         return _build_basketball_prompt(match_context)
-
-    home_team = match_info.get("home_team", "Ev Sahibi")
-    away_team = match_info.get("away_team", "Deplasman")
-    data = _data_sections(match_context, score_label="Gol")
-
-    prompt = f"""
-Sen profesyonel bir futbol veri analisti, kıdemli bahis stratejisti ve yapay zeka tahmin motorusun.
-Aşağıda verilen karşılaşma bilgilerini, bahis oranlarını ve Google Search aracını kullanarak internetteki güncel haberleri, takım formlarını, sakatlıkları ve saha koşullarını analiz et.
-
---- MAÇ BİLGİLERİ ---
-Spor Türü: {sport_type}
-Lig / Turnuva: {match_info.get("league_name", "Bilinmeyen Lig")}
-Tarih ve Saat: {match_info.get("match_date", "")} {match_info.get("match_time", "")}
-Ev Sahibi Takım: {home_team}
-Deplasman Takımı: {away_team}
-
---- İDDAA BAHİS ORANLARI ---
-{data["odds"]}
-
---- VERİTABANI İSTATİSTİKLERİ ---
-(Satır formatı: Tarih | Lig | Ev Sahibi Skor Deplasman (İY skoru) [ilgili takım için sonuç: G=Galibiyet, B=Beraberlik, M=Mağlubiyet])
-
-1. Ev Sahibi Takım ({home_team}) Son Maçları:
-{data["home_last"]}
-
-2. Deplasman Takımı ({away_team}) Son Maçları:
-{data["away_last"]}
-
-3. Aralarındaki İkili Mücadele Geçmişi (H2H):
-{data["h2h"]}
-
-4. Lig Puan Durumu:
-{data["table"]}
-
-5. Sakat ve Cezalı Oyuncular:
-{data["missing"]}
-
---- ÇOK ÖNEMLİ İŞ KURALI (ALT / ÜST SINIRI: 3 GOL) ---
-Bu sistemde geleneksel 2.5 baremi yerine KESİNLİKLE 3 GOL KURALI uygulanmaktadır:
-- Eğer maçta atılacak toplam gol sayısı 4 veya daha fazla ise (Gol sayısı >= 4): Tahmin kesinlikle "ÜST" olmalıdır.
-- Eğer maçta atılacak toplam gol sayısı 3 veya daha az ise (Gol sayısı <= 3): Tahmin kesinlikle "ALT" olmalıdır.
-(Örn: 2-1 veya 3-0 biten maç 3 gol olduğu için ALT kabul edilir; 2-2 veya 3-1 biten maç 4 gol olduğu için ÜST kabul edilir).
-
-{data["best_bet"]}
-
-Lütfen Google Search ile takımların en güncel durumlarını (kadro eksikleri, teknik direktör açıklamaları, form grafiği, hava durumu) tara ve aşağıdaki JSON formatında profesyonel tahmin oluştur.
-"""
-    return prompt
+    return _build_football_prompt(match_context)
 
 # ==============================================================================
 # YANIT İŞLEME

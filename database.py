@@ -733,6 +733,37 @@ def calculate_common_prediction_accuracy(conn: sqlite3.Connection) -> Dict[str, 
             stats[f"{key}_accuracy"] = round(stats[f"{key}_correct"] / stats[f"{key}_total"] * 100, 1) if stats[f"{key}_total"] else None
     return {"matches": len(rows), **totals}
 
+def calculate_weekly_best_bet_accuracy(conn: sqlite3.Connection, model: str = "gemini") -> Dict[str, Any]:
+    """
+    Bu haftaki (Pazartesi-Pazar, Europe/Istanbul; bülten tarihleri bu saat diliminde) sonuçlanmış maçlarda
+    seçilen modelin (gemini | python) Tercih 1 (⭐) isabeti:
+    {"week_start", "week_end", "best_bet_total", "best_bet_correct", "best_bet_accuracy"}.
+    """
+    today = datetime.now(ZoneInfo("Europe/Istanbul")).date()
+    week_start = today - timedelta(days=today.weekday())
+    week_end = week_start + timedelta(days=6)
+    prediction_join = ("JOIN python_predictions pp ON pp.match_id = m.id" if model.lower() == "python"
+                       else _LATEST_PREDICTION_JOIN)
+    alias = "pp" if model.lower() == "python" else "p"
+    rows = conn.execute(f"""
+        SELECT m.sport_type, r.ht_home_score, r.ht_away_score, r.ft_home_score, r.ft_away_score,
+               {alias}.best_bet_market AS best_market, {alias}.best_bet_selection AS best_selection
+        FROM matches m
+        JOIN results r ON r.match_id = m.id
+        {prediction_join}
+        WHERE ({_CHRONOLOGICAL_DATE}) BETWEEN ? AND ?
+    """, (week_start.isoformat(), week_end.isoformat())).fetchall()
+
+    total = correct = 0
+    for r in rows:
+        won = rules.selection_won(r["best_market"], r["best_selection"], dict(r))
+        if won is not None:
+            total += 1
+            correct += bool(won)
+    return {"week_start": week_start.isoformat(), "week_end": week_end.isoformat(),
+            "best_bet_total": total, "best_bet_correct": correct,
+            "best_bet_accuracy": round(correct / total * 100, 1) if total else None}
+
 def get_pick_history(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     """
     Sonuçlanmış maçlar için tüm aday tercihlerini (Gemini ⭐/2, Python ⭐/2) ve tutma durumlarını döner (kupon kalibrasyonu için);
@@ -826,6 +857,19 @@ def get_leagues_accuracy_report(conn: sqlite3.Connection, model: str = "gemini",
     )
     top_league = evaluated_leagues[0] if evaluated_leagues else None
 
+    # Yüzdesi %75 ve üzeri olan yüksek başarılı liglerin toplu hesabı
+    leagues_over_75 = [
+        l for l in evaluated_leagues
+        if l.get("best_bet_accuracy") is not None and l["best_bet_accuracy"] >= 75.0
+    ]
+    over_75_best_bet_correct = sum(l.get("best_bet_correct", 0) for l in leagues_over_75)
+    over_75_best_bet_total = sum(l.get("best_bet_total", 0) for l in leagues_over_75)
+    over_75_best_bet_accuracy = round(over_75_best_bet_correct / over_75_best_bet_total * 100, 1) if over_75_best_bet_total else None
+
+    over_75_alt_bet_correct = sum(l.get("alt_bet_correct", 0) for l in leagues_over_75)
+    over_75_alt_bet_total = sum(l.get("alt_bet_total", 0) for l in leagues_over_75)
+    over_75_alt_bet_accuracy = round(over_75_alt_bet_correct / over_75_alt_bet_total * 100, 1) if over_75_alt_bet_total else None
+
     return {
         "model": "python" if is_python else "gemini",
         "summary": {
@@ -843,9 +887,20 @@ def get_leagues_accuracy_report(conn: sqlite3.Connection, model: str = "gemini",
                 "accuracy": top_league["best_bet_accuracy"],
                 "total": top_league["best_bet_total"],
                 "correct": top_league["best_bet_correct"]
-            } if top_league else None
+            } if top_league else None,
+            "over_75": {
+                "leagues_count": len(leagues_over_75),
+                "best_bet_correct": over_75_best_bet_correct,
+                "best_bet_total": over_75_best_bet_total,
+                "best_bet_accuracy": over_75_best_bet_accuracy,
+                "alt_bet_correct": over_75_alt_bet_correct,
+                "alt_bet_total": over_75_alt_bet_total,
+                "alt_bet_accuracy": over_75_alt_bet_accuracy,
+                "total_evaluated_matches": sum(l.get("evaluated", 0) for l in leagues_over_75)
+            }
         },
         "common": calculate_common_prediction_accuracy(conn),
+        "week": calculate_weekly_best_bet_accuracy(conn, model),
         "leagues": leagues
     }
 
@@ -1498,6 +1553,16 @@ def get_league_detail_context(conn: sqlite3.Connection, league_id: int) -> Optio
     # 3. İstatistikler
     gem_stats = get_league_prediction_stats(conn).get(league_id)
     py_stats = get_league_python_prediction_stats(conn).get(league_id)
+    gem_is_over_75 = bool(gem_stats and gem_stats.get("best_bet_accuracy") is not None and gem_stats["best_bet_accuracy"] >= 75.0)
+    py_is_over_75 = bool(py_stats and py_stats.get("best_bet_accuracy") is not None and py_stats["best_bet_accuracy"] >= 75.0)
+
+    # Sistem geneli %75+ elit lig istatistikleri
+    gem_rep = get_leagues_accuracy_report(conn, model="gemini")
+    py_rep = get_leagues_accuracy_report(conn, model="python")
+    global_over_75 = {
+        "gemini": gem_rep.get("summary", {}).get("over_75"),
+        "python": py_rep.get("summary", {}).get("over_75"),
+    }
 
     stats = {
         "total_matches": len(unfinished_matches) + len(completed_matches),
@@ -1505,7 +1570,10 @@ def get_league_detail_context(conn: sqlite3.Connection, league_id: int) -> Optio
         "completed_matches": len(completed_matches),
         "analyzed_matches": sum(1 for m in unfinished_matches if m.get("predicted_score")),
         "gemini": gem_stats,
-        "python": py_stats
+        "python": py_stats,
+        "gemini_is_over_75": gem_is_over_75,
+        "python_is_over_75": py_is_over_75,
+        "global_over_75": global_over_75
     }
 
     return {
